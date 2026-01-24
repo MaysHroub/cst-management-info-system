@@ -369,12 +369,13 @@ function AgentsManagement() {
     const [agents, setAgents] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showForm, setShowForm] = useState(false);
+    const [zones, setZones] = useState([]);
     const [form, setForm] = useState({
         agent_code: '',
         name: '',
         department: 'Public Works',
         skills: [],
-        zone_ids: ['ZONE-DT-01'],
+        zone_ids: [],
         geo_fence: null,
         days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
         start_time: '08:00',
@@ -383,8 +384,12 @@ function AgentsManagement() {
     });
 
     const fetchAgents = async () => {
-        const res = await client.get('/agents/?active_only=false');
-        setAgents(res.data);
+        const [agentRes, zoneRes] = await Promise.all([
+            client.get('/agents/?active_only=false'),
+            client.get('/agents/zones')
+        ]);
+        setAgents(agentRes.data);
+        setZones(zoneRes.data);
         setLoading(false);
     };
 
@@ -467,6 +472,21 @@ function AgentsManagement() {
                             <div className="form-group">
                                 <label className="form-label">Skills (comma-separated)</label>
                                 <input className="form-input" onChange={e => setForm({ ...form, skills: e.target.value.split(',').map(s => s.trim()) })} placeholder="road, water, general" />
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label">Coverage Zone</label>
+                                <select 
+                                    className="form-select" 
+                                    value={form.zone_ids[0] || ''} 
+                                    onChange={e => setForm({ ...form, zone_ids: e.target.value ? [e.target.value] : [] })}
+                                    required
+                                >
+                                    <option value="">Select a zone...</option>
+                                    {zones.map(z => (
+                                        <option key={z.zone_id} value={z.zone_id}>{z.name}</option>
+                                    ))}
+                                </select>
+                                {zones.length === 0 && <p className="text-xs text-muted mt-1">No zones defined. Please create a zone first.</p>}
                             </div>
                         </div>
 

@@ -329,18 +329,30 @@ function VerifyForm() {
 }
 
 function ProfilePage() {
-    const { citizen, login } = useContext(CitizenContext);
+    const { citizen, login, logout } = useContext(CitizenContext);
+    const navigate = useNavigate();
     const [profile, setProfile] = useState(null);
     const [loading, setLoading] = useState(true);
     const [prefs, setPrefs] = useState({});
 
     useEffect(() => {
-        client.get(`/citizens/${citizen._id}`).then(res => {
-            setProfile(res.data);
-            setPrefs(res.data.preferences || {});
-            setLoading(false);
-        });
-    }, [citizen._id]);
+        client.get(`/citizens/${citizen._id}`)
+            .then(res => {
+                setProfile(res.data);
+                setPrefs(res.data.preferences || {});
+                setLoading(false);
+            })
+            .catch(err => {
+                console.error("Profile fetch failed:", err);
+                if (err.response?.status === 404) {
+                    alert("Your session has expired or your account no longer exists. Logging out.");
+                    logout();
+                    navigate('/citizen/login');
+                } else {
+                    setLoading(false);
+                }
+            });
+    }, [citizen._id, logout, navigate]);
 
     const savePrefs = async () => {
         try {

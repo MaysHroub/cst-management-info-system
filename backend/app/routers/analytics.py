@@ -149,17 +149,30 @@ async def get_basic_stats():
     }
 
 @router.get("/heatmap")
-async def get_heatmap_feed(category: Optional[str] = None, priority: Optional[str] = None):
+async def get_heatmap_feed(category: Optional[str] = None, priority: Optional[str] = None, include_closed: bool = False):
     """GeoJSON FeatureCollection with normalized weights and priority info"""
-    cache_key = f"heatmap_{category}_{priority}"
-    cached = get_cached(cache_key)
-    if cached: return cached
+    # Note: cache disabled for debugging - can re-enable later
+    # cache_key = f"heatmap_{category}_{priority}_{include_closed}"
+    # cached = get_cached(cache_key)
+    # if cached: return cached
 
-    query = {"status": {"$in": ["new", "triaged", "assigned", "in_progress"]}}
-    if category: query["category"] = category
-    if priority: query["priority"] = priority
+    # By default, only show open requests. If include_closed is True, show all.
+    if include_closed:
+        query = {}  # No status filter - show all requests
+        print(f"Heatmap query: ALL requests (include_closed={include_closed})")
+    else:
+        query = {"status": {"$in": ["new", "triaged", "assigned", "in_progress"]}}
+        print(f"Heatmap query: OPEN requests only (include_closed={include_closed})")
+    
+    if category: 
+        query["category"] = category
+        print(f"  - Filtering by category: {category}")
+    if priority: 
+        query["priority"] = priority
+        print(f"  - Filtering by priority: {priority}")
     
     requests = list(db.service_requests.find(query))
+    print(f"  - Found {len(requests)} requests matching query")
     now = datetime.utcnow()
     features = []
     
@@ -184,8 +197,7 @@ async def get_heatmap_feed(category: Optional[str] = None, priority: Optional[st
         })
     
     res = {"type": "FeatureCollection", "features": features}
-    set_cache(cache_key, res)
-    return res
+    print(f\"  - Returning {len(features)} features in GeoJSON\")\n    # Cache disabled for debugging\n    # set_cache(cache_key, res)\n    return res
 
 @router.get("/zones/geojson")
 async def get_zone_summaries():
