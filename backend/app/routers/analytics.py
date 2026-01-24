@@ -1,199 +1,222 @@
-from fastapi import APIRouter, Query
-from typing import Optional
+from fastapi import APIRouter, Query, HTTPException
+from fastapi.responses import Response
+from typing import Optional, List
 from datetime import datetime, timedelta
+import io
+import csv
 from app.database import get_database
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 db = get_database()
 
-@router.get("/stats")
-async def get_stats():
-    """Get overall statistics"""
-    pipeline = [
-        {"$group": {"_id": "$status", "count": {"$sum": 1}}}
-    ]
-    status_results = list(db.service_requests.aggregate(pipeline))
-    by_status = {r["_id"]: r["count"] for r in status_results}
+def get_base_filters(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    zone: Optional[str] = None,
+    category: Optional[str] = None,
+    priority: Optional[str] = None,
+    agent_id: Optional[str] = None
+):
+    query = {}
+    if start_date or end_date:
+        date_q = {}
+        if start_date: date_q["$gte"] = start_date
+        if end_date: date_q["$lte"] = end_date
+        query["timestamps.created_at"] = date_q
     
-    # Category breakdown
-    cat_pipeline = [
-        {"$group": {"_id": "$category", "count": {"$sum": 1}}}
-    ]
-    cat_results = list(db.service_requests.aggregate(cat_pipeline))
-    by_category = {r["_id"]: r["count"] for r in cat_results}
+    if zone: query["location.zone_id"] = zone
+    if category: query["category"] = category
+    if priority: query["priority"] = priority
+    if agent_id: query["assigned_agent_id"] = agent_id
     
-    # Priority breakdown
-    prio_pipeline = [
-        {"$group": {"_id": "$priority", "count": {"$sum": 1}}}
-    ]
-    prio_results = list(db.service_requests.aggregate(prio_pipeline))
-    by_priority = {r["_id"]: r["count"] for r in prio_results}
-    
-    total = db.service_requests.count_documents({})
-    open_count = db.service_requests.count_documents({"status": {"$in": ["new", "triaged", "assigned", "in_progress"]}})
-    resolved_count = db.service_requests.count_documents({"status": {"$in": ["resolved", "closed"]}})
-    
-    return {
-        "total_requests": total,
-        "open_requests": open_count,
-        "resolved_requests": resolved_count,
-        "by_status": by_status,
-        "by_category": by_category,
-        "by_priority": by_priority
-    }
+    return query
 
 @router.get("/kpis")
-async def get_kpis():
-    """Get Key Performance Indicators"""
-    total = db.service_requests.count_documents({})
-    open_count = db.service_requests.count_documents({"status": {"$in": ["new", "triaged", "assigned", "in_progress"]}})
-    
-    # SLA breach calculation
+async def get_kpis(
+    start_date: Optional[datetime] = None, 
+    end_date: Optional[datetime] = None,
+    zone: Optional[str] = None
+):
+    """
+    Advanced KPIs using $facet for multi-dimensional analysis.
+    Computes backlog, SLA metrics, and rating distributions in one pass.
+    """
     now = datetime.utcnow()
-    at_risk = 0
-    breached = 0
+    match_query = get_base_filters(start_date, end_date, zone)
     
-    open_requests = list(db.service_requests.find({"status": {"$in": ["new", "triaged", "assigned", "in_progress"]}}))
-    for req in open_requests:
-        created = req["timestamps"].get("created_at")
-        if created:
-            hours_elapsed = (now - created).total_seconds() / 3600
-            sla = req.get("sla_policy", {})
-            target = sla.get("target_hours", 96)
-            breach = sla.get("breach_threshold_hours", 120)
-            
-            if hours_elapsed >= breach:
-                breached += 1
-            elif hours_elapsed >= target:
-                at_risk += 1
+    pipeline = [
+        {"$match": match_query},
+        {"$facet": {
+            "overall": [
+                {"$group": {
+                    "_id": None,
+                    "total": {"$sum": 1},
+                    "open": {"$sum": {"$cond": [{"$in": ["$status", ["new", "triaged", "assigned", "in_progress"]]}, 1, 0]}},
+                    "avg_rating": {"$avg": "$rating.stars"}
+                }}
+            ],
+            "by_status": [
+                {"$group": {"_id": "$status", "count": {"$sum": 1}}}
+            ],
+            "by_category": [
+                {"$group": {"_id": "$category", "count": {"$sum": 1}}}
+            ],
+            "rating_dist": [
+                {"$match": {"rating.stars": {"$ne": None}}},
+                {"$group": {"_id": "$rating.stars", "count": {"$sum": 1}}},
+                {"$sort": {"_id": 1}}
+            ],
+            "sla_data": [
+                {"$match": {"status": {"$in": ["new", "triaged", "assigned", "in_progress"]}}},
+                {"$project": {
+                    "age_hours": {"$divide": [{"$subtract": [now, "$timestamps.created_at"]}, 3600000]},
+                    "target": {"$ifNull": ["$sla_policy.target_hours", 72]},
+                    "breach": {"$ifNull": ["$sla_policy.breach_threshold_hours", 120]}
+                }},
+                {"$group": {
+                    "_id": None,
+                    "at_risk": {"$sum": {"$cond": [{"$and": [{"$gte": ["$age_hours", "$target"]}, {"$lt": ["$age_hours", "$breach"]}]}, 1, 0]}},
+                    "breached": {"$sum": {"$cond": [{"$gte": ["$age_hours", "$breach"]}, 1, 0]}}
+                }}
+            ]
+        }}
+    ]
     
-    # Average resolution time
-    resolved = list(db.service_requests.find({"status": {"$in": ["resolved", "closed"]}, "timestamps.resolved_at": {"$exists": True}}))
-    resolution_times = []
-    for req in resolved:
-        created = req["timestamps"].get("created_at")
-        resolved_at = req["timestamps"].get("resolved_at")
-        if created and resolved_at:
-            resolution_times.append((resolved_at - created).total_seconds() / 3600)
+    results = list(db.service_requests.aggregate(pipeline))[0]
+    overall = results["overall"][0] if results["overall"] else {"total": 0, "open": 0, "avg_rating": 0}
+    sla = results["sla_data"][0] if results["sla_data"] else {"at_risk": 0, "breached": 0}
     
-    avg_resolution_hours = sum(resolution_times) / len(resolution_times) if resolution_times else 0
-    
-    # Average rating
-    ratings = list(db.service_requests.find({"rating": {"$ne": None}}))
-    avg_rating = sum(r["rating"]["stars"] for r in ratings) / len(ratings) if ratings else 0
-    
-    sla_breach_pct = (breached / open_count * 100) if open_count > 0 else 0
-    
+    open_count = overall["open"]
+    breached_count = sla["breached"]
+    sla_breach_pct = (breached_count / open_count * 100) if open_count > 0 else 0
+
     return {
-        "total_requests": total,
+        "total_requests": overall["total"],
         "open_requests": open_count,
-        "at_risk_count": at_risk,
-        "breached_count": breached,
+        "at_risk_count": sla["at_risk"],
+        "breached_count": breached_count,
         "sla_breach_percentage": round(sla_breach_pct, 1),
-        "avg_resolution_hours": round(avg_resolution_hours, 1),
-        "avg_rating": round(avg_rating, 1),
-        "total_agents": db.service_agents.count_documents({"active": True}),
-        "total_citizens": db.citizens.count_documents({})
+        "avg_rating": round(overall.get("avg_rating") or 0, 1),
+        "by_status": {r["_id"]: r["count"] for r in results["by_status"]},
+        "by_category": {r["_id"]: r["count"] for r in results["by_category"]},
+        "rating_distribution": {int(r["_id"]): r["count"] for r in results["rating_dist"]}
     }
 
 @router.get("/heatmap")
 async def get_heatmap_feed(category: Optional[str] = None, priority: Optional[str] = None):
-    """Return GeoJSON FeatureCollection for open requests"""
+    """GeoJSON FeatureCollection with normalized weights for heatmap"""
     query = {"status": {"$in": ["new", "triaged", "assigned", "in_progress"]}}
-    if category:
-        query["category"] = category
-    if priority:
-        query["priority"] = priority
+    if category: query["category"] = category
+    if priority: query["priority"] = priority
     
     requests = list(db.service_requests.find(query))
-    
     now = datetime.utcnow()
     features = []
+    
     for req in requests:
         created = req["timestamps"].get("created_at", now)
         age_hours = (now - created).total_seconds() / 3600
-        
-        # Weight based on priority and age
-        priority_weight = {"critical": 1.0, "high": 0.8, "medium": 0.5, "low": 0.3}.get(req.get("priority", "medium"), 0.5)
-        weight = priority_weight * (1 + age_hours / 24)  # Older requests have more weight
+        priority_weight = {"critical": 1.2, "high": 1.0, "medium": 0.7, "low": 0.4}.get(req.get("priority"), 0.7)
+        weight = priority_weight * (1 + min(age_hours / 168, 2.0)) # Cap age weight at 1 week
         
         features.append({
             "type": "Feature",
             "properties": {
                 "request_id": req["request_id"],
-                "category": req.get("category"),
-                "priority": req.get("priority"),
-                "status": req.get("status"),
-                "weight": round(weight, 2),
-                "age_hours": round(age_hours, 1)
+                "category": req["category"],
+                "status": req["status"],
+                "weight": round(weight, 2)
             },
             "geometry": req["location"]
         })
-    
-    return {
-        "type": "FeatureCollection",
-        "features": features,
-        "generated_at": now.isoformat()
-    }
+    return {"type": "FeatureCollection", "features": features}
+
+@router.get("/cohorts")
+async def get_cohorts():
+    """Repeat-issue cohorts: identifying hotspots with frequent recurrence"""
+    pipeline = [
+        {"$group": {
+            "_id": "$location.address_hint",
+            "count": {"$sum": 1},
+            "categories": {"$addToSet": "$category"},
+            "avg_rating": {"$avg": "$rating.stars"},
+            "last_incident": {"$max": "$timestamps.created_at"}
+        }},
+        {"$match": {"count": {"$gt": 1}}}, # Only cohorts with recurrence
+        {"$sort": {"count": -1}},
+        {"$limit": 10}
+    ]
+    results = list(db.service_requests.aggregate(pipeline))
+    return results
 
 @router.get("/agents")
 async def get_agent_analytics():
-    """Agent productivity analytics"""
-    agents = list(db.service_agents.find({"active": True}))
-    result = []
-    
-    for agent in agents:
-        agent_id = str(agent["_id"])
-        
-        # Get assigned requests
-        assigned = db.service_requests.count_documents({"assigned_agent_id": agent_id, "status": {"$in": ["assigned", "in_progress"]}})
-        completed = db.service_requests.count_documents({"assigned_agent_id": agent_id, "status": {"$in": ["resolved", "closed"]}})
-        total = db.service_requests.count_documents({"assigned_agent_id": agent_id})
-        
-        result.append({
-            "agent_id": agent_id,
-            "agent_name": agent["name"],
-            "department": agent.get("department"),
-            "active_tasks": assigned,
-            "completed_tasks": completed,
-            "total_tasks": total,
-            "skills": agent.get("skills", [])
-        })
-    
-    return result
-
-@router.get("/timeline")
-async def get_timeline(days: int = Query(7, ge=1, le=90)):
-    """Get requests over time"""
-    now = datetime.utcnow()
-    start = now - timedelta(days=days)
-    
+    """Agent productivity and workload facets"""
     pipeline = [
-        {"$match": {"timestamps.created_at": {"$gte": start}}},
-        {"$group": {
-            "_id": {
-                "$dateToString": {"format": "%Y-%m-%d", "date": "$timestamps.created_at"}
-            },
-            "count": {"$sum": 1}
+        {"$lookup": {
+            "from": "service_agents",
+            "localField": "assigned_agent_id",
+            "foreignField": "_id",
+            "as": "agent_info"
         }},
-        {"$sort": {"_id": 1}}
+        {"$match": {"assigned_agent_id": {"$ne": None}}},
+        {"$group": {
+            "_id": "$assigned_agent_id",
+            "agent_name": {"$first": {"$arrayElemAt": ["$agent_info.name", 0]}},
+            "active_tasks": {"$sum": {"$cond": [{"$in": ["$status", ["assigned", "in_progress"]]}, 1, 0]}},
+            "completed_tasks": {"$sum": {"$cond": [{"$in": ["$status", ["resolved", "closed"]]}, 1, 0]}},
+            "avg_resolution_hours": {"$avg": {
+                "$divide": [
+                    {"$subtract": ["$timestamps.resolved_at", "$timestamps.created_at"]},
+                    3600000
+                ]
+            }}
+        }},
+        {"$sort": {"completed_tasks": -1}}
     ]
-    
-    results = list(db.service_requests.aggregate(pipeline))
-    return [{"date": r["_id"], "count": r["count"]} for r in results]
+    return list(db.service_requests.aggregate(pipeline))
 
-@router.get("/zones")
-async def get_zone_stats():
-    """Aggregate stats by zone"""
-    pipeline = [
-        {"$group": {
-            "_id": "$location.zone_id",
-            "count": {"$sum": 1},
-            "open": {"$sum": {"$cond": [{"$in": ["$status", ["new", "triaged", "assigned", "in_progress"]]}, 1, 0]}},
-            "resolved": {"$sum": {"$cond": [{"$in": ["$status", ["resolved", "closed"]]}, 1, 0]}}
-        }},
-        {"$sort": {"count": -1}}
-    ]
+@router.get("/export/csv")
+async def export_analytics_csv(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+):
+    """Generate governance-ready CSV report of SLA compliance"""
+    query = get_base_filters(start_date, end_date)
+    requests = list(db.service_requests.find(query).sort("timestamps.created_at", -1))
     
-    results = list(db.service_requests.aggregate(pipeline))
-    return [{"zone_id": r["_id"] or "Unknown", "total": r["count"], "open": r["open"], "resolved": r["resolved"]} for r in results]
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Request ID", "Category", "Status", "Created At", "Resolved At", "SLA State", "Rating"])
+    
+    for req in requests:
+        ts = req.get("timestamps", {})
+        sla_state = "Compliant"
+        if ts.get("created_at") and ts.get("resolved_at"):
+            hours = (ts["resolved_at"] - ts["created_at"]).total_seconds() / 3600
+            if hours > req.get("sla_policy", {}).get("breach_threshold_hours", 120):
+                sla_state = "Breached"
+        elif ts.get("created_at"):
+            hours = (datetime.utcnow() - ts["created_at"]).total_seconds() / 3600
+            if hours > req.get("sla_policy", {}).get("breach_threshold_hours", 120):
+                sla_state = "Breached"
+                
+        rating_stars = ""
+        if req.get("rating") and isinstance(req.get("rating"), dict):
+            rating_stars = req.get("rating").get("stars", "")
+
+        writer.writerow([
+            req.get("request_id"),
+            req.get("category"),
+            req.get("status"),
+            ts.get("created_at").isoformat() if ts.get("created_at") else "",
+            ts.get("resolved_at").isoformat() if ts.get("resolved_at") else "",
+            sla_state,
+            rating_stars
+        ])
+    
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=cst_report_{datetime.now().strftime('%Y%m%d')}.csv"}
+    )
