@@ -3,11 +3,42 @@ from typing import List, Optional
 from datetime import datetime
 from bson import ObjectId
 from app.database import get_database
-from app.models.schemas import Agent, AgentCreate, RequestStatus
+from app.models.schemas import Agent, AgentCreate, RequestStatus, ZoneCreate
 from app.utils.common import get_allowed_transitions
 
 router = APIRouter(prefix="/agents", tags=["Service Agents"])
 db = get_database()
+
+# --- Zone Management ---
+
+@router.post("/zones")
+async def create_zone(zone: ZoneCreate):
+    """Define a new municipal service zone with a GeoJSON boundary"""
+    existing = db.zones.find_one({"zone_id": zone.zone_id})
+    if existing:
+        raise HTTPException(status_code=400, detail="Zone ID already exists")
+    
+    new_zone = zone.dict()
+    new_zone["created_at"] = datetime.utcnow()
+    
+    db.zones.insert_one(new_zone)
+    return {"message": "Zone created successfully", "zone_id": zone.zone_id}
+
+@router.get("/zones")
+async def list_zones():
+    """List all defined municipal zones"""
+    zones = list(db.zones.find({}))
+    for z in zones:
+        z["_id"] = str(z["_id"])
+    return zones
+
+@router.delete("/zones/{zone_id}")
+async def delete_zone(zone_id: str):
+    """Remove a municipal zone"""
+    db.zones.delete_one({"zone_id": zone_id})
+    return {"message": "Zone deleted"}
+
+# --- Agent Management ---
 
 @router.post("/")
 async def create_agent(agent: AgentCreate):
@@ -44,6 +75,125 @@ async def list_agents(active_only: bool = True):
             "status": {"$in": ["assigned", "in_progress"]}
         })
     return agents
+
+@router.post("/assign-request/{request_id}")
+async def assign_request_to_best_agent(request_id: str, agent_id: Optional[str] = None):
+    """Auto-assign or manually assign a request to an agent"""
+    req = db.service_requests.find_one({"request_id": request_id})
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    if req["status"] not in ["triaged", "assigned"]:
+        raise HTTPException(status_code=400, detail="Request must be triaged first")
+
+    location = req["location"]
+    
+    if agent_id:
+        # Manual assignment
+        if not ObjectId.is_valid(agent_id):
+            raise HTTPException(status_code=400, detail="Invalid agent ID")
+        chosen_agent = db.service_agents.find_one({"_id": ObjectId(agent_id), "active": True})
+        if not chosen_agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+    else:
+        # Auto-assignment based on geo coverage + skills + shift
+        # 1. Geo Coverage
+        query = {
+            "coverage.geo_fence": {
+                "$geoIntersects": {
+                    "$geometry": {
+                        "type": "Point",
+                        "coordinates": location["coordinates"]
+                    }
+                }
+            },
+            "active": True
+        }
+        
+        candidates = list(db.service_agents.find(query))
+        
+        # 3. Shift Availability
+        now = datetime.now()
+        current_day = now.strftime("%a") # Mon, Tue...
+        current_time = now.strftime("%H:%M")
+        
+        # Filter by Skill
+        CATEGORY_SKILLS = {
+            "pothole": "road",
+            "signage": "road",
+            "lighting": "road",
+            "water_leak": "water",
+            "sewage": "water",
+            "trash": "waste"
+        }
+        required_skill = CATEGORY_SKILLS.get(req.get("category"), "general")
+        skill_candidates = []
+        for c in candidates:
+            if required_skill in c.get("skills", []) or "general" in c.get("skills", []):
+                skill_candidates.append(c)
+        
+        if skill_candidates:
+            candidates = skill_candidates
+        
+        # Filter by Shift
+        shift_candidates = []
+        for c in candidates:
+            is_available = False
+            schedule = c.get("schedule", {})
+            if schedule.get("on_call", False):
+                is_available = True
+            else:
+                for shift in schedule.get("shifts", []):
+                    if shift["day"] == current_day:
+                        if shift["start"] <= current_time <= shift["end"]:
+                            is_available = True
+                            break
+            
+            if is_available:
+                shift_candidates.append(c)
+        
+        if shift_candidates:
+            candidates = shift_candidates
+        
+        if not candidates:
+            raise HTTPException(status_code=404, detail="No agents available matching criteria (Zone+Skill+Shift)")
+        
+        # 4. Workload Balancing
+        for c in candidates:
+            c["_workload"] = db.service_requests.count_documents({
+                "assigned_agent_id": str(c["_id"]),
+                "status": {"$in": ["assigned", "in_progress"]}
+            })
+        
+        chosen_agent = min(candidates, key=lambda x: x["_workload"])
+    
+    # Update Request
+    db.service_requests.update_one(
+        {"request_id": request_id},
+        {
+            "$set": {
+                "assigned_agent_id": str(chosen_agent["_id"]),
+                "status": RequestStatus.ASSIGNED,
+                "workflow.current_state": RequestStatus.ASSIGNED,
+                "workflow.allowed_next": get_allowed_transitions(RequestStatus.ASSIGNED),
+                "timestamps.assigned_at": datetime.utcnow(),
+                "timestamps.updated_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    # Log event
+    db.performance_logs.update_one(
+        {"request_id": request_id},
+        {"$push": {"event_stream": {
+            "type": "assigned",
+            "by": {"actor_type": "system", "actor_id": "auto_assign"},
+            "at": datetime.utcnow(),
+            "meta": {"agent_id": str(chosen_agent["_id"]), "agent_name": chosen_agent["name"]}
+        }}}
+    )
+    
+    return {"message": "Assigned successfully", "agent_id": str(chosen_agent["_id"]), "agent_name": chosen_agent["name"]}
 
 @router.get("/{agent_id}")
 async def get_agent(agent_id: str):
@@ -83,138 +233,6 @@ async def get_agent_tasks(agent_id: str):
         t["_id"] = str(t["_id"])
     
     return tasks
-
-@router.post("/assign-request/{request_id}")
-async def assign_request_to_best_agent(request_id: str, agent_id: Optional[str] = None):
-    """Auto-assign or manually assign a request to an agent"""
-    req = db.service_requests.find_one({"request_id": request_id})
-    if not req:
-        raise HTTPException(status_code=404, detail="Request not found")
-    
-    if req["status"] not in ["triaged", "assigned"]:
-        raise HTTPException(status_code=400, detail="Request must be triaged first")
-
-    location = req["location"]
-    
-    if agent_id:
-        # Manual assignment
-        if not ObjectId.is_valid(agent_id):
-            raise HTTPException(status_code=400, detail="Invalid agent ID")
-        chosen_agent = db.service_agents.find_one({"_id": ObjectId(agent_id), "active": True})
-        if not chosen_agent:
-            raise HTTPException(status_code=404, detail="Agent not found")
-    else:
-        # Auto-assignment based on geo coverage + skills + shift
-        # 1. Geo Coverage
-        query = {
-            "coverage.geo_fence": {
-                "$geoIntersects": {
-                    "$geometry": {
-                        "type": "Point",
-                        "coordinates": location["coordinates"]
-                    }
-                }
-            },
-            "active": True
-        }
-        
-        candidates = list(db.service_agents.find(query))
-        
-        # 3. Shift Availability
-        # Use local time for shift comparison as shifts are likely defined in local time
-        now = datetime.now()
-        current_day = now.strftime("%a") # Mon, Tue...
-        current_time = now.strftime("%H:%M")
-        
-        print(f"Auto-Assign Debug: Request {request_id} (Category: {req.get('category')}) at {location}")
-        print(f"Current Time: {current_day} {current_time}")
-        print(f"Initial Candidates: {[c['name'] for c in candidates]}")
-        
-        # Filter by Skill
-        CATEGORY_SKILLS = {
-            "pothole": "road",
-            "signage": "road",
-            "lighting": "road",
-            "water_leak": "water",
-            "sewage": "water",
-            "trash": "waste"
-        }
-        required_skill = CATEGORY_SKILLS.get(req.get("category"), "general")
-        skill_candidates = []
-        for c in candidates:
-            if required_skill in c.get("skills", []) or "general" in c.get("skills", []):
-                skill_candidates.append(c)
-            else:
-                print(f"Candidate {c['name']} rejected: Missing skill '{required_skill}'")
-        
-        if skill_candidates:
-            candidates = skill_candidates
-        
-        # Filter by Shift
-        shift_candidates = []
-        for c in candidates:
-            is_available = False
-            schedule = c.get("schedule", {})
-            if schedule.get("on_call", False):
-                is_available = True
-            else:
-                for shift in schedule.get("shifts", []):
-                    if shift["day"] == current_day:
-                        if shift["start"] <= current_time <= shift["end"]:
-                            is_available = True
-                            break
-            
-            if is_available:
-                shift_candidates.append(c)
-            else:
-                print(f"Candidate {c['name']} rejected: Not on shift (Schedule: {schedule.get('shifts')})")
-        
-        if shift_candidates:
-            candidates = shift_candidates
-        else:
-            print("No candidates on shift. Checking if any logic fallback is needed. Currently Strict.")
-        
-        if not candidates:
-            print("No agents available after filtering.")
-            raise HTTPException(status_code=404, detail="No agents available matching criteria (Zone+Skill+Shift)")
-        
-        # 4. Workload Balancing
-        for c in candidates:
-            c["_workload"] = db.service_requests.count_documents({
-                "assigned_agent_id": str(c["_id"]),
-                "status": {"$in": ["assigned", "in_progress"]}
-            })
-        
-        chosen_agent = min(candidates, key=lambda x: x["_workload"])
-        print(f"Chosen Agent: {chosen_agent['name']} (Workload: {chosen_agent['_workload']})")
-    
-    # Update Request
-    db.service_requests.update_one(
-        {"request_id": request_id},
-        {
-            "$set": {
-                "assigned_agent_id": str(chosen_agent["_id"]),
-                "status": RequestStatus.ASSIGNED,
-                "workflow.current_state": RequestStatus.ASSIGNED,
-                "workflow.allowed_next": get_allowed_transitions(RequestStatus.ASSIGNED),
-                "timestamps.assigned_at": datetime.utcnow(),
-                "timestamps.updated_at": datetime.utcnow()
-            }
-        }
-    )
-    
-    # Log event
-    db.performance_logs.update_one(
-        {"request_id": request_id},
-        {"$push": {"event_stream": {
-            "type": "assigned",
-            "by": {"actor_type": "system", "actor_id": "auto_assign"},
-            "at": datetime.utcnow(),
-            "meta": {"agent_id": str(chosen_agent["_id"]), "agent_name": chosen_agent["name"]}
-        }}}
-    )
-    
-    return {"message": "Assigned successfully", "agent_id": str(chosen_agent["_id"]), "agent_name": chosen_agent["name"]}
 
 @router.patch("/{agent_id}")
 async def update_agent(agent_id: str, active: Optional[bool] = Body(None)):

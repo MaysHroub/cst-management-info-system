@@ -18,6 +18,7 @@ function StaffDashboard() {
                     <Route path="/requests" element={<RequestsManagement />} />
                     <Route path="/requests/:requestId" element={<RequestDetail />} />
                     <Route path="/agents" element={<AgentsManagement />} />
+                    <Route path="/zones" element={<ZonesManagement />} />
                 </Routes>
             </div>
         </div>
@@ -48,6 +49,7 @@ function Dashboard() {
             <div className="flex gap-2 mb-4">
                 <Link to="/staff/requests" className="btn btn-primary">Manage Requests</Link>
                 <Link to="/staff/agents" className="btn btn-outline">Manage Agents</Link>
+                <Link to="/staff/zones" className="btn btn-outline">Manage Zones</Link>
             </div>
 
             <div className="grid grid-4 gap-4 mb-6">
@@ -521,6 +523,97 @@ function AgentsManagement() {
                         </div>
                     </div>
                 ))}
+            </div>
+        </div>
+    );
+}
+
+function ZonesManagement() {
+    const [zones, setZones] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [showForm, setShowForm] = useState(false);
+    const [form, setForm] = useState({
+        zone_id: '',
+        name: '',
+        coordinates: '[[[35.19, 31.89], [35.22, 31.89], [35.22, 31.92], [35.19, 31.92], [35.19, 31.89]]]'
+    });
+
+    const fetchZones = async () => {
+        const res = await client.get('/agents/zones');
+        setZones(res.data);
+        setLoading(false);
+    };
+
+    useEffect(() => { fetchZones(); }, []);
+
+    const handleCreate = async (e) => {
+        e.preventDefault();
+        try {
+            await client.post('/agents/zones', {
+                zone_id: form.zone_id,
+                name: form.name,
+                boundary: {
+                    type: "Polygon",
+                    coordinates: JSON.parse(form.coordinates)
+                }
+            });
+            setShowForm(false);
+            fetchZones();
+        } catch (err) {
+            alert(err.response?.data?.detail || 'Failed to create zone');
+        }
+    };
+
+    if (loading) return <div className="loading"><div className="spinner"></div> Loading zones...</div>;
+
+    return (
+        <div>
+            <div className="flex justify-between items-center mb-4">
+                <h2>Municipal Zones</h2>
+                <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Define New Zone</button>
+            </div>
+
+            {showForm && (
+                <div className="card mb-4">
+                    <h3 className="mb-4">Create Service Zone</h3>
+                    <form onSubmit={handleCreate}>
+                        <div className="grid grid-2 gap-4">
+                            <div className="form-group">
+                                <label className="form-label">Zone Unique ID</label>
+                                <input className="form-input" value={form.zone_id} onChange={e => setForm({ ...form, zone_id: e.target.value })} placeholder="ZONE-XX-01" required />
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label">Zone Name</label>
+                                <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Downtown Core" required />
+                            </div>
+                        </div>
+                        <div className="form-group mt-4">
+                            <label className="form-label">Boundary Coordinates (GeoJSON Polygon [[[lng, lat], ...]])</label>
+                            <textarea className="form-input" style={{ height: '100px', fontFamily: 'monospace' }} value={form.coordinates} onChange={e => setForm({ ...form, coordinates: e.target.value })} required />
+                            <p className="text-xs text-muted mt-1">Provide a closed array of coordinates for the zone boundary.</p>
+                        </div>
+                        <div className="flex gap-2 mt-4">
+                            <button type="submit" className="btn btn-primary">Define Zone</button>
+                            <button type="button" className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
+                        </div>
+                    </form>
+                </div>
+            )}
+
+            <div className="grid grid-3 gap-4">
+                {zones.map(zone => (
+                    <div key={zone.zone_id} className="card">
+                        <div className="flex justify-between items-start mb-2">
+                            <h4>{zone.name}</h4>
+                            <span className="badge badge-outline">{zone.zone_id}</span>
+                        </div>
+                        <div className="map-preview mb-4" style={{ height: '150px', borderRadius: '4px', overflow: 'hidden' }}>
+                            <MapDisplay coordinates={zone.boundary.coordinates[0][0].reverse()} />
+                        </div>
+                        <button className="btn btn-sm btn-ghost text-danger" onClick={() => client.delete(`/agents/zones/${zone.zone_id}`).then(fetchZones)}>Delete Zone</button>
+                    </div>
+                ))}
+                {zones.length === 0 && <p className="text-center p-8 text-muted" style={{ gridColumn: 'span 3' }}>No zones defined yet.</p>}
             </div>
         </div>
     );

@@ -1,5 +1,5 @@
 import React from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 const priorityColors = {
@@ -9,7 +9,7 @@ const priorityColors = {
     low: '#059669'
 };
 
-const HeatMap = ({ geojson }) => {
+const HeatMap = ({ geojson, zoneJson }) => {
     const features = geojson?.features || [];
 
     // Calculate center from features or use default
@@ -23,12 +23,37 @@ const HeatMap = ({ geojson }) => {
         ];
     }
 
+    const zoneStyle = (feature) => {
+        const count = feature.properties.request_count || 0;
+        return {
+            fillColor: count > 10 ? '#991b1b' : count > 5 ? '#f97316' : count > 0 ? '#fbbf24' : '#94a3b8',
+            weight: 2,
+            opacity: 1,
+            color: 'white',
+            dashArray: '3',
+            fillOpacity: 0.3
+        };
+    };
+
     return (
         <MapContainer center={center} zoom={13} style={{ height: '100%', width: '100%' }}>
             <TileLayer
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a>'
             />
+
+            {/* Zone Choropleth Layer */}
+            {zoneJson && (
+                <GeoJSON
+                    data={zoneJson}
+                    style={zoneStyle}
+                    onEachFeature={(feature, layer) => {
+                        layer.bindPopup(`<strong>Zone: ${feature.properties.name}</strong><br/>Open Requests: ${feature.properties.request_count}`);
+                    }}
+                />
+            )}
+
+            {/* Request Points Layer */}
             {features.map((feature, idx) => {
                 const [lng, lat] = feature.geometry.coordinates;
                 const props = feature.properties;
@@ -41,26 +66,25 @@ const HeatMap = ({ geojson }) => {
                         center={[lat, lng]}
                         radius={radius}
                         fillColor={color}
-                        fillOpacity={0.6}
-                        color={color}
+                        fillOpacity={0.7}
+                        color="#fff" // White border for contrast
                         weight={2}
                     >
                         <Popup>
-                            <div>
-                                <strong>{props.request_id}</strong>
-                                <p>{props.category}</p>
-                                <p>Priority: {props.priority}</p>
-                                <p>Status: {props.status}</p>
-                                <p>Age: {props.age_hours?.toFixed(1)} hours</p>
-                                <hr style={{ margin: '4px 0', borderTop: '1px solid #eee' }} />
-                                <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '4px' }}>
-                                    {lat.toFixed(5)}, {lng.toFixed(5)}
+                            <div style={{ minWidth: '150px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                    <strong>{props.request_id}</strong>
+                                    <span className="badge" style={{ background: color, color: '#fff', fontSize: '0.6rem' }}>{props.priority}</span>
                                 </div>
+                                <p style={{ margin: '0', fontSize: '0.85rem' }}>{props.category}</p>
+                                <p style={{ margin: '4px 0', fontSize: '0.8rem', color: '#666' }}>Status: {props.status}</p>
+                                <p style={{ margin: '0', fontSize: '0.75rem', color: '#999' }}>Age: {props.age_hours?.toFixed(1)} hrs</p>
+                                <hr style={{ margin: '8px 0', border: 'none', borderTop: '1px solid #eee' }} />
                                 <a
                                     href={`https://www.google.com/maps?q=${lat},${lng}`}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    style={{ fontSize: '0.8rem', color: '#2563eb' }}
+                                    style={{ fontSize: '0.8rem', color: '#2563eb', textDecoration: 'none' }}
                                 >
                                     Open in Google Maps ↗
                                 </a>

@@ -207,3 +207,17 @@ class Agent(MongoBaseModel):
     active: bool = True
     created_at: Optional[datetime] = None
     current_workload: int = 0
+# --- Module 5: Zones ---
+
+class ZoneCreate(BaseModel):
+    zone_id: str
+    name: str
+    boundary: GeoFence # Reuse GeoFence (Polygon)
+    meta: Optional[Dict[str, Any]] = {}
+
+class Zone(MongoBaseModel):
+    zone_id: str
+    name: str
+    boundary: GeoFence
+    meta: Optional[Dict[str, Any]] = {}
+    created_at: Optional[datetime] = None
