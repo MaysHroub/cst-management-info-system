@@ -52,6 +52,18 @@ const HeatMap = ({ geojson }) => {
                                 <p>Priority: {props.priority}</p>
                                 <p>Status: {props.status}</p>
                                 <p>Age: {props.age_hours?.toFixed(1)} hours</p>
+                                <hr style={{ margin: '4px 0', borderTop: '1px solid #eee' }} />
+                                <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '4px' }}>
+                                    {lat.toFixed(5)}, {lng.toFixed(5)}
+                                </div>
+                                <a
+                                    href={`https://www.google.com/maps?q=${lat},${lng}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ fontSize: '0.8rem', color: '#2563eb' }}
+                                >
+                                    Open in Google Maps ↗
+                                </a>
                             </div>
                         </Popup>
                     </CircleMarker>

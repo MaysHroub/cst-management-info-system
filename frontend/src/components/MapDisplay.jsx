@@ -26,7 +26,21 @@ const MapDisplay = ({ coordinates, zoom = 15 }) => {
                 attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a>'
             />
             <Marker position={position}>
-                <Popup>Request Location</Popup>
+                <Popup>
+                    <div style={{ minWidth: '150px' }}>
+                        <div style={{ fontSize: '0.9rem', marginBottom: '4px' }}>
+                            {position[0].toFixed(5)}, {position[1].toFixed(5)}
+                        </div>
+                        <a
+                            href={`https://www.google.com/maps?q=${position[0]},${position[1]}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ fontSize: '0.9rem', color: '#2563eb' }}
+                        >
+                            Open in Google Maps ↗
+                        </a>
+                    </div>
+                </Popup>
             </Marker>
         </MapContainer>
     );

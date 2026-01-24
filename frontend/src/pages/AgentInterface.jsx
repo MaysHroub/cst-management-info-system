@@ -66,12 +66,20 @@ function AgentInterface() {
                             <div className="stat-label">Active Tasks</div>
                         </div>
                         <div className="stat-card">
-                            <div className="stat-value">{selectedAgent.skills?.length || 0}</div>
-                            <div className="stat-label">Skills</div>
+                            <div className="stat-label mb-2">Skills</div>
+                            <div className="flex gap-1 flex-wrap">
+                                {selectedAgent.skills?.length > 0 ? selectedAgent.skills.map(s => (
+                                    <span key={s} className="badge" style={{ background: '#e0e7ff', color: '#4f46e5' }}>{s}</span>
+                                )) : <span className="text-muted">None</span>}
+                            </div>
                         </div>
                         <div className="stat-card">
-                            <div className="stat-value">{selectedAgent.coverage?.zone_ids?.length || 0}</div>
-                            <div className="stat-label">Coverage Zones</div>
+                            <div className="stat-label mb-2">Coverage Zones</div>
+                            <div className="flex gap-1 flex-wrap">
+                                {selectedAgent.coverage?.zone_ids?.length > 0 ? selectedAgent.coverage.zone_ids.map(z => (
+                                    <span key={z} className="badge" style={{ background: '#ecfdf5', color: '#047857' }}>{z}</span>
+                                )) : <span className="text-muted">None</span>}
+                            </div>
                         </div>
                     </div>
                 )}

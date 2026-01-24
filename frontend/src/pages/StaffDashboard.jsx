@@ -218,11 +218,8 @@ function RequestDetail() {
 
     const handleAssign = async (agentId) => {
         try {
-            if (agentId) {
-                await client.post(`/agents/assign-request/${requestId}`, { agent_id: agentId });
-            } else {
-                await client.post(`/agents/assign-request/${requestId}`, {});
-            }
+            const params = agentId ? `?agent_id=${agentId}` : '';
+            await client.post(`/agents/assign-request/${requestId}${params}`);
             fetchData();
         } catch (err) {
             alert(err.response?.data?.detail || 'Assignment failed');
@@ -309,14 +306,55 @@ function RequestDetail() {
                     <div className="card">
                         <h3 className="card-title mb-4">Timeline</h3>
                         <div className="timeline">
-                            {['created_at', 'triaged_at', 'assigned_at', 'resolved_at', 'closed_at'].map(key => (
-                                <div key={key} className={`timeline-item ${request.timestamps?.[key] ? 'completed' : ''}`}>
-                                    <strong>{key.replace('_at', '').replace('_', ' ')}</strong>
-                                    <p className="text-xs text-muted">
-                                        {request.timestamps?.[key] ? new Date(request.timestamps[key]).toLocaleString() : 'Pending'}
-                                    </p>
-                                </div>
-                            ))}
+                            {(() => {
+                                const STATUS_ORDER = {
+                                    'new': 0, 'triaged': 1, 'assigned': 2, 'in_progress': 3, 'resolved': 4, 'closed': 5
+                                };
+                                const currentStep = STATUS_ORDER[request.status] || 0;
+
+                                return ['created_at', 'triaged_at', 'assigned_at', 'work_started_at', 'resolved_at', 'closed_at'].map((key) => {
+                                    // Custom label mapping
+                                    const labels = {
+                                        'created_at': 'New',
+                                        'triaged_at': 'Triaged',
+                                        'assigned_at': 'Assigned',
+                                        'work_started_at': 'In Progress',
+                                        'resolved_at': 'Resolved',
+                                        'closed_at': 'Closed'
+                                    };
+
+                                    // Map timestamp key to status key for order check
+                                    const statusKeyMap = {
+                                        'created_at': 'new',
+                                        'triaged_at': 'triaged',
+                                        'assigned_at': 'assigned',
+                                        'work_started_at': 'in_progress',
+                                        'resolved_at': 'resolved',
+                                        'closed_at': 'closed'
+                                    };
+
+                                    const statusKey = statusKeyMap[key];
+                                    const stepIndex = STATUS_ORDER[statusKey];
+                                    const isCompleted = stepIndex <= currentStep;
+
+                                    // Special handling for work_started which is mapped from milestones
+                                    let timestamp = request.timestamps?.[key];
+                                    if (key === 'work_started_at' && !timestamp) {
+                                        // Try to find in milestone
+                                        const m = request.milestones?.find(m => m.type === 'work_started');
+                                        if (m) timestamp = m.timestamp;
+                                    }
+
+                                    return (
+                                        <div key={key} className={`timeline-item ${isCompleted ? 'completed' : ''}`}>
+                                            <strong>{labels[key]}</strong>
+                                            <p className="text-xs text-muted">
+                                                {timestamp ? new Date(timestamp).toLocaleString() : (isCompleted ? '' : 'Pending')}
+                                            </p>
+                                        </div>
+                                    );
+                                });
+                            })()}
                         </div>
                     </div>
                 </div>
@@ -335,7 +373,11 @@ function AgentsManagement() {
         department: 'Public Works',
         skills: [],
         zone_ids: ['ZONE-DT-01'],
-        geo_fence: null
+        geo_fence: null,
+        days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+        start_time: '08:00',
+        end_time: '17:00',
+        on_call: false
     });
 
     const fetchAgents = async () => {
@@ -348,6 +390,14 @@ function AgentsManagement() {
 
     const handleCreate = async (e) => {
         e.preventDefault();
+
+        // Construct shifts
+        const shifts = form.days.map(day => ({
+            day,
+            start: form.start_time,
+            end: form.end_time
+        }));
+
         try {
             await client.post('/agents/', {
                 agent_code: form.agent_code,
@@ -361,12 +411,23 @@ function AgentsManagement() {
                         coordinates: [[[35.19, 31.89], [35.22, 31.89], [35.22, 31.92], [35.19, 31.92], [35.19, 31.89]]]
                     }
                 },
-                schedule: { shifts: [] }
+                schedule: {
+                    shifts: shifts,
+                    on_call: form.on_call
+                }
             });
             setShowForm(false);
             fetchAgents();
         } catch (err) {
             alert(err.response?.data?.detail || 'Failed to create agent');
+        }
+    };
+
+    const toggleDay = (day) => {
+        if (form.days.includes(day)) {
+            setForm({ ...form, days: form.days.filter(d => d !== day) });
+        } else {
+            setForm({ ...form, days: [...form.days, day] });
         }
     };
 
@@ -406,6 +467,32 @@ function AgentsManagement() {
                                 <input className="form-input" onChange={e => setForm({ ...form, skills: e.target.value.split(',').map(s => s.trim()) })} placeholder="road, water, general" />
                             </div>
                         </div>
+
+                        <div className="form-group mt-2">
+                            <label className="form-label mb-2">Shift Schedule</label>
+                            <div className="flex gap-2 flex-wrap mb-2">
+                                {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => (
+                                    <button
+                                        type="button"
+                                        key={day}
+                                        className={`btn btn-sm ${form.days.includes(day) ? 'btn-primary' : 'btn-outline'}`}
+                                        onClick={() => toggleDay(day)}
+                                    >
+                                        {day}
+                                    </button>
+                                ))}
+                            </div>
+                            <div className="flex gap-2 items-center">
+                                <input type="time" className="form-input" style={{ width: 'auto' }} value={form.start_time} onChange={e => setForm({ ...form, start_time: e.target.value })} />
+                                <span>to</span>
+                                <input type="time" className="form-input" style={{ width: 'auto' }} value={form.end_time} onChange={e => setForm({ ...form, end_time: e.target.value })} />
+                                <label className="flex items-center gap-2 ml-4">
+                                    <input type="checkbox" checked={form.on_call} onChange={e => setForm({ ...form, on_call: e.target.checked })} />
+                                    <span>On Call (24/7)</span>
+                                </label>
+                            </div>
+                        </div>
+
                         <div className="flex gap-2 mt-4">
                             <button type="submit" className="btn btn-primary">Create Agent</button>
                             <button type="button" className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
@@ -425,6 +512,9 @@ function AgentsManagement() {
                         <p className="text-sm mb-2">{agent.department}</p>
                         <div className="flex gap-1 flex-wrap mb-2">
                             {agent.skills?.map(s => <span key={s} className="badge" style={{ background: '#e0e7ff', color: '#4f46e5', fontSize: '0.7rem' }}>{s}</span>)}
+                        </div>
+                        <div className="text-sm mb-2">
+                            <span className="text-muted">Shift:</span> {agent.schedule?.on_call ? 'On Call' : `${agent.schedule?.shifts?.[0]?.start} - ${agent.schedule?.shifts?.[0]?.end}`}
                         </div>
                         <div className="text-sm">
                             <span className="text-muted">Workload:</span> <strong>{agent.current_workload || 0}</strong> active

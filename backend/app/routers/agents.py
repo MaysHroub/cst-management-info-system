@@ -120,8 +120,17 @@ async def assign_request_to_best_agent(request_id: str, agent_id: Optional[str] 
         
         candidates = list(db.service_agents.find(query))
         
-        # 2. Skill Match
-        # Mapping category to skills
+        # 3. Shift Availability
+        # Use local time for shift comparison as shifts are likely defined in local time
+        now = datetime.now()
+        current_day = now.strftime("%a") # Mon, Tue...
+        current_time = now.strftime("%H:%M")
+        
+        print(f"Auto-Assign Debug: Request {request_id} (Category: {req.get('category')}) at {location}")
+        print(f"Current Time: {current_day} {current_time}")
+        print(f"Initial Candidates: {[c['name'] for c in candidates]}")
+        
+        # Filter by Skill
         CATEGORY_SKILLS = {
             "pothole": "road",
             "signage": "road",
@@ -130,39 +139,44 @@ async def assign_request_to_best_agent(request_id: str, agent_id: Optional[str] 
             "sewage": "water",
             "trash": "waste"
         }
-        required_skill = CATEGORY_SKILLS.get(req["category"], "general")
+        required_skill = CATEGORY_SKILLS.get(req.get("category"), "general")
+        skill_candidates = []
+        for c in candidates:
+            if required_skill in c.get("skills", []) or "general" in c.get("skills", []):
+                skill_candidates.append(c)
+            else:
+                print(f"Candidate {c['name']} rejected: Missing skill '{required_skill}'")
         
-        skill_candidates = [c for c in candidates if required_skill in c.get("skills", []) or "general" in c.get("skills", [])]
         if skill_candidates:
             candidates = skill_candidates
-        # If no skill match, keep all candidates (fallback)
         
-        # 3. Shift Availability
-        now = datetime.utcnow()
-        current_day = now.strftime("%a") # Mon, Tue...
-        current_time = now.strftime("%H:%M")
-        
-        def is_on_shift(agent):
-            schedule = agent.get("schedule", {})
+        # Filter by Shift
+        shift_candidates = []
+        for c in candidates:
+            is_available = False
+            schedule = c.get("schedule", {})
             if schedule.get("on_call", False):
-                return True
-            for shift in schedule.get("shifts", []):
-                if shift["day"] == current_day:
-                    if shift["start"] <= current_time <= shift["end"]:
-                        return True
-            return False
+                is_available = True
+            else:
+                for shift in schedule.get("shifts", []):
+                    if shift["day"] == current_day:
+                        if shift["start"] <= current_time <= shift["end"]:
+                            is_available = True
+                            break
             
-        shift_candidates = [c for c in candidates if is_on_shift(c)]
+            if is_available:
+                shift_candidates.append(c)
+            else:
+                print(f"Candidate {c['name']} rejected: Not on shift (Schedule: {schedule.get('shifts')})")
+        
         if shift_candidates:
             candidates = shift_candidates
-        # If none on shift, ignore restriction (or maybe fallback to on_call)
+        else:
+            print("No candidates on shift. Checking if any logic fallback is needed. Currently Strict.")
         
         if not candidates:
-            # Fallback: get any active agent
-            candidates = list(db.service_agents.find({"active": True}).limit(5))
-        
-        if not candidates:
-            raise HTTPException(status_code=404, detail="No agents available")
+            print("No agents available after filtering.")
+            raise HTTPException(status_code=404, detail="No agents available matching criteria (Zone+Skill+Shift)")
         
         # 4. Workload Balancing
         for c in candidates:
@@ -172,6 +186,7 @@ async def assign_request_to_best_agent(request_id: str, agent_id: Optional[str] 
             })
         
         chosen_agent = min(candidates, key=lambda x: x["_workload"])
+        print(f"Chosen Agent: {chosen_agent['name']} (Workload: {chosen_agent['_workload']})")
     
     # Update Request
     db.service_requests.update_one(
