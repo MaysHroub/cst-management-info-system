@@ -15,7 +15,7 @@ While the system was designed, reviewed, and integrated jointly, the primary mod
   - Module 2: Citizen Portal & Profiles
   - Module 4: Data Analysis & Visualization
 
-Despite this division, the user interface (UI) was developed collaboratively by both team members. All UI components were designed, reviewed, and refined together to ensure consistency, usability, and a unified appearance across the system.
+Despite this division, the user interface (UI) was worked on together by both team members to ensure the modules looked their best and remained visually consistent.
 
 ## Overview
 
