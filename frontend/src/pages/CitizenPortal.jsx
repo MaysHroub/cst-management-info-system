@@ -2,6 +2,7 @@ import React, { useState, useEffect, createContext, useContext } from 'react';
 import { Routes, Route, Link, useNavigate, Navigate } from 'react-router-dom';
 import client from '../api/client';
 import MapPicker from '../components/MapPicker';
+import MapDisplay from '../components/MapDisplay';
 
 // Auth Context for citizen session
 const CitizenContext = createContext(null);
@@ -46,9 +47,11 @@ function CitizenPortal() {
                         <Route path="/register" element={<RegisterForm />} />
                         <Route path="/login" element={<LoginForm />} />
                         <Route path="/verify" element={<VerifyForm />} />
+                        <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
                         <Route path="/report" element={<ProtectedRoute><ReportIssue /></ProtectedRoute>} />
                         <Route path="/track" element={<ProtectedRoute><TrackRequest /></ProtectedRoute>} />
                         <Route path="/my-requests" element={<ProtectedRoute><MyRequests /></ProtectedRoute>} />
+                        <Route path="/request/:requestId" element={<ProtectedRoute><RequestDetail /></ProtectedRoute>} />
                     </Routes>
                 </div>
             </div>
@@ -59,7 +62,6 @@ function CitizenPortal() {
 // Protected Route Component
 function ProtectedRoute({ children }) {
     const { citizen } = useContext(CitizenContext);
-    const navigate = useNavigate();
 
     if (!citizen) {
         return (
@@ -110,7 +112,7 @@ function PortalHome() {
                 </div>
             )}
 
-            <div className="grid grid-3 gap-4">
+            <div className="grid grid-2 gap-4 mb-4">
                 <div className="card" onClick={() => navigate('/citizen/report')} style={{ cursor: 'pointer' }}>
                     <div className="text-center">
                         <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📝</div>
@@ -127,12 +129,22 @@ function PortalHome() {
                         {!citizen && <span className="badge mt-2" style={{ background: '#fef3c7', color: '#92400e' }}>Login Required</span>}
                     </div>
                 </div>
+            </div>
+
+            <div className="grid grid-2 gap-4">
                 <div className="card" onClick={() => navigate('/citizen/my-requests')} style={{ cursor: 'pointer' }}>
                     <div className="text-center">
                         <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📋</div>
                         <h3>My Requests</h3>
                         <p className="text-sm text-muted mt-2">View all your requests</p>
                         {!citizen && <span className="badge mt-2" style={{ background: '#fef3c7', color: '#92400e' }}>Login Required</span>}
+                    </div>
+                </div>
+                <div className="card" onClick={() => citizen ? navigate('/citizen/profile') : navigate('/citizen/login')} style={{ cursor: 'pointer' }}>
+                    <div className="text-center">
+                        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>👤</div>
+                        <h3>{citizen ? 'My Profile' : 'Create Account'}</h3>
+                        <p className="text-sm text-muted mt-2">{citizen ? 'Manage your profile' : 'Register as a citizen'}</p>
                     </div>
                 </div>
             </div>
@@ -157,7 +169,6 @@ function RegisterForm() {
                 contacts: { email: form.email, phone: form.phone, preferred_contact: 'email' }
             });
             setResult({ success: true, data: res.data });
-            // Auto-login after registration
             login(res.data);
         } catch (err) {
             setResult({ success: false, message: err.response?.data?.detail || 'Registration failed' });
@@ -279,7 +290,6 @@ function VerifyForm() {
         setError(null);
         try {
             await client.post(`/citizens/${citizen._id}/verify`, { otp_code: otp });
-            // Update local state
             const updated = { ...citizen, verification_state: 'verified' };
             login(updated);
             navigate('/citizen');
@@ -318,16 +328,129 @@ function VerifyForm() {
     );
 }
 
+function ProfilePage() {
+    const { citizen, login } = useContext(CitizenContext);
+    const [profile, setProfile] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [prefs, setPrefs] = useState({});
+
+    useEffect(() => {
+        client.get(`/citizens/${citizen._id}`).then(res => {
+            setProfile(res.data);
+            setPrefs(res.data.preferences || {});
+            setLoading(false);
+        });
+    }, [citizen._id]);
+
+    const savePrefs = async () => {
+        try {
+            await client.patch(`/citizens/${citizen._id}/preferences`, prefs);
+            alert('Preferences saved!');
+        } catch (err) {
+            alert('Failed to save preferences');
+        }
+    };
+
+    if (loading) return <div className="loading"><div className="spinner"></div> Loading...</div>;
+
+    return (
+        <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+            <div className="card mb-4">
+                <h2 className="mb-4">My Profile</h2>
+                <div className="grid grid-2 gap-4">
+                    <div>
+                        <span className="text-muted text-sm">Name</span>
+                        <p className="font-medium">{profile?.full_name}</p>
+                    </div>
+                    <div>
+                        <span className="text-muted text-sm">Status</span>
+                        <p><span className={`badge badge-${profile?.verification_state}`}>{profile?.verification_state}</span></p>
+                    </div>
+                    <div>
+                        <span className="text-muted text-sm">Email</span>
+                        <p>{profile?.contacts?.email}</p>
+                    </div>
+                    <div>
+                        <span className="text-muted text-sm">Phone</span>
+                        <p>{profile?.contacts?.phone || 'Not set'}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div className="card mb-4">
+                <h3 className="mb-4">My Statistics</h3>
+                <div className="grid grid-4 gap-4">
+                    <div className="stat-card">
+                        <div className="stat-value">{profile?.stats?.total_requests || 0}</div>
+                        <div className="stat-label">Total Requests</div>
+                    </div>
+                    <div className="stat-card">
+                        <div className="stat-value">{profile?.stats?.open_requests || 0}</div>
+                        <div className="stat-label">Open</div>
+                    </div>
+                    <div className="stat-card success">
+                        <div className="stat-value">{profile?.stats?.resolved_requests || 0}</div>
+                        <div className="stat-label">Resolved</div>
+                    </div>
+                    <div className="stat-card">
+                        <div className="stat-value">{profile?.stats?.avg_rating || 0}★</div>
+                        <div className="stat-label">Avg Rating</div>
+                    </div>
+                </div>
+            </div>
+
+            <div className="card">
+                <h3 className="mb-4">Notification Preferences</h3>
+                <div className="flex flex-col gap-2">
+                    <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={prefs?.notifications?.on_status_change ?? true} onChange={e => setPrefs({ ...prefs, notifications: { ...prefs.notifications, on_status_change: e.target.checked } })} />
+                        <span>Notify on status changes</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={prefs?.notifications?.on_resolution ?? true} onChange={e => setPrefs({ ...prefs, notifications: { ...prefs.notifications, on_resolution: e.target.checked } })} />
+                        <span>Notify on resolution</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={prefs?.notifications?.email_enabled ?? true} onChange={e => setPrefs({ ...prefs, notifications: { ...prefs.notifications, email_enabled: e.target.checked } })} />
+                        <span>Email notifications (stubbed)</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={prefs?.notifications?.sms_enabled ?? false} onChange={e => setPrefs({ ...prefs, notifications: { ...prefs.notifications, sms_enabled: e.target.checked } })} />
+                        <span>SMS notifications (stubbed)</span>
+                    </label>
+                </div>
+
+                <h3 className="mt-4 mb-4">Privacy Settings</h3>
+                <div className="flex flex-col gap-2">
+                    <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={prefs?.privacy?.default_anonymous ?? false} onChange={e => setPrefs({ ...prefs, privacy: { ...prefs.privacy, default_anonymous: e.target.checked } })} />
+                        <span>Submit requests anonymously by default</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={prefs?.privacy?.share_publicly_on_map ?? true} onChange={e => setPrefs({ ...prefs, privacy: { ...prefs.privacy, share_publicly_on_map: e.target.checked } })} />
+                        <span>Show my requests on public map</span>
+                    </label>
+                </div>
+
+                <button className="btn btn-primary mt-4" onClick={savePrefs}>Save Preferences</button>
+            </div>
+        </div>
+    );
+}
+
 function ReportIssue() {
     const { citizen } = useContext(CitizenContext);
     const [form, setForm] = useState({
         category: 'pothole',
         description: '',
         priority: 'medium',
-        location: null
+        location: null,
+        anonymous: false,
+        evidence_files: []
     });
-    const [loading, setLoading] = useState(false);
+    const [uploading, setUploading] = useState(false);
     const [result, setResult] = useState(null);
+    const navigate = useNavigate();
 
     const categories = [
         { value: 'pothole', label: 'Pothole / Road Damage' },
@@ -345,22 +468,23 @@ function ReportIssue() {
             alert('Please select a location on the map');
             return;
         }
-        setLoading(true);
+        setUploading(true);
         try {
             const payload = {
-                citizen_id: citizen._id,
-                anonymous: false,
+                citizen_id: form.anonymous ? 'anonymous' : citizen._id,
+                anonymous: form.anonymous,
                 category: form.category,
                 description: form.description,
                 priority: form.priority,
-                location: { type: 'Point', coordinates: form.location }
+                location: { type: 'Point', coordinates: form.location },
+                evidence: form.evidence_files
             };
             const res = await client.post('/requests/', payload);
             setResult({ success: true, data: res.data });
         } catch (err) {
             setResult({ success: false, message: err.response?.data?.detail || 'Submission failed' });
         }
-        setLoading(false);
+        setUploading(false);
     };
 
     if (result?.success) {
@@ -385,7 +509,15 @@ function ReportIssue() {
                             <span>{result.data.sla_policy?.target_hours || 96} hours</span>
                         </div>
                     </div>
-                    <button className="btn btn-primary mt-4" onClick={() => setResult(null)}>Submit Another</button>
+                    {result.data.location && (
+                        <div className="mt-4 map-container" style={{ height: '200px' }}>
+                            <MapDisplay coordinates={result.data.location.coordinates} />
+                        </div>
+                    )}
+                    <div className="flex gap-2 justify-center mt-4">
+                        <button className="btn btn-primary" onClick={() => navigate(`/citizen/request/${result.data.request_id}`)}>View Details</button>
+                        <button className="btn btn-outline" onClick={() => setResult(null)}>Submit Another</button>
+                    </div>
                 </div>
             </div>
         );
@@ -420,6 +552,49 @@ function ReportIssue() {
                 </div>
 
                 <div className="form-group">
+                    <label className="form-label">Evidence (Photos)</label>
+                    <input
+                        type="file"
+                        accept="image/*"
+                        className="form-input"
+                        onChange={async (e) => {
+                            if (e.target.files?.[0]) {
+                                setUploading(true);
+                                const formData = new FormData();
+                                formData.append('file', e.target.files[0]);
+                                try {
+                                    const res = await client.post('/upload', formData, {
+                                        headers: { 'Content-Type': 'multipart/form-data' }
+                                    });
+                                    setForm(prev => ({
+                                        ...prev,
+                                        evidence_files: [...prev.evidence_files, { type: 'photo', url: res.data.url }]
+                                    }));
+                                } catch (err) {
+                                    alert('Upload failed');
+                                }
+                                setUploading(false);
+                            }
+                        }}
+                    />
+                    {uploading && <span className="text-sm text-muted">Uploading...</span>}
+                    {form.evidence_files.length > 0 && (
+                        <div className="flex gap-2 mt-2 flex-wrap">
+                            {form.evidence_files.map((ev, i) => (
+                                <div key={i} className="text-sm text-success">✓ Image {i + 1} uploaded</div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                <div className="form-group">
+                    <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={form.anonymous} onChange={e => setForm({ ...form, anonymous: e.target.checked })} />
+                        <span>Submit anonymously (your identity won't be linked)</span>
+                    </label>
+                </div>
+
+                <div className="form-group">
                     <label className="form-label">Location (Click on map)</label>
                     <MapPicker onLocationSelect={(loc) => setForm({ ...form, location: loc })} />
                     {form.location && (
@@ -427,7 +602,7 @@ function ReportIssue() {
                     )}
                 </div>
 
-                <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Submitting...' : 'Submit Request'}</button>
+                <button type="submit" className="btn btn-primary" disabled={uploading}>{uploading ? 'Processing...' : 'Submit Request'}</button>
             </form>
         </div>
     );
@@ -435,13 +610,46 @@ function ReportIssue() {
 
 function TrackRequest() {
     const [requestId, setRequestId] = useState('');
-    const [request, setRequest] = useState(null);
-    const [loading, setLoading] = useState(false);
-    const [rating, setRating] = useState({ stars: 0, comment: '' });
+    const navigate = useNavigate();
 
-    const handleSearch = async (e) => {
+    const handleSearch = (e) => {
         e.preventDefault();
-        setLoading(true);
+        if (requestId.trim()) {
+            navigate(`/citizen/request/${requestId.trim()}`);
+        }
+    };
+
+    return (
+        <div style={{ maxWidth: '500px', margin: '0 auto' }}>
+            <div className="card">
+                <h2 className="mb-4">Track Your Request</h2>
+                <p className="text-muted mb-4">Enter your Request ID to see status and timeline</p>
+                <form onSubmit={handleSearch}>
+                    <div className="form-group">
+                        <input
+                            className="form-input"
+                            value={requestId}
+                            onChange={e => setRequestId(e.target.value)}
+                            placeholder="Enter Request ID (e.g., CST-2026-0001)"
+                            style={{ fontSize: '1.1rem' }}
+                        />
+                    </div>
+                    <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>Track Request</button>
+                </form>
+            </div>
+        </div>
+    );
+}
+
+function RequestDetail() {
+    const { citizen } = useContext(CitizenContext);
+    const [request, setRequest] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [comment, setComment] = useState('');
+    const [rating, setRating] = useState({ stars: 0, comment: '', dispute: false, dispute_reason: '' });
+    const requestId = window.location.pathname.split('/').pop();
+
+    const fetchRequest = async () => {
         try {
             const res = await client.get(`/requests/${requestId}`);
             setRequest(res.data);
@@ -451,69 +659,203 @@ function TrackRequest() {
         setLoading(false);
     };
 
-    const handleRate = async () => {
+    useEffect(() => { fetchRequest(); }, [requestId]);
+
+    const handleComment = async () => {
+        if (!comment.trim()) return;
         try {
-            await client.post(`/requests/${requestId}/rating`, { stars: rating.stars, comment: rating.comment });
+            await client.post(`/requests/${requestId}/comment`, {
+                text: comment,
+                author_id: citizen._id,
+                author_type: 'citizen'
+            });
+            setComment('');
+            fetchRequest();
+        } catch (err) {
+            alert('Failed to add comment');
+        }
+    };
+
+    const handleRate = async () => {
+        if (rating.stars === 0) {
+            alert('Please select a star rating');
+            return;
+        }
+        try {
+            await client.post(`/requests/${requestId}/rating`, rating);
             alert('Rating submitted!');
-            handleSearch({ preventDefault: () => { } });
+            fetchRequest();
         } catch (err) {
             alert(err.response?.data?.detail || 'Failed to submit rating');
         }
     };
 
+    const handleAddEvidence = async (url) => {
+        if (!url.trim()) return;
+        try {
+            await client.post(`/requests/${requestId}/evidence`, { url: url, evidence_type: 'photo' });
+            alert('Evidence added!');
+            fetchRequest();
+        } catch (err) {
+            alert('Failed to add evidence');
+        }
+    };
+
+    if (loading) return <div className="loading"><div className="spinner"></div> Loading...</div>;
+    if (!request) return <div className="empty-state"><p>Request not found</p></div>;
+
+    const canRate = (request.status === 'resolved' || request.status === 'closed') && !request.rating;
+
     return (
-        <div style={{ maxWidth: '700px', margin: '0 auto' }}>
+        <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+            <Link to="/citizen/my-requests" className="btn btn-ghost mb-4">← Back to My Requests</Link>
+
             <div className="card mb-4">
-                <h2 className="mb-4">Track Your Request</h2>
-                <form onSubmit={handleSearch} className="flex gap-2">
-                    <input className="form-input" value={requestId} onChange={e => setRequestId(e.target.value)} placeholder="Enter Request ID (e.g., CST-2026-0001)" style={{ flex: 1 }} />
-                    <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Searching...' : 'Track'}</button>
-                </form>
+                <div className="flex justify-between items-center mb-4">
+                    <h2>{request.request_id}</h2>
+                    <span className={`badge badge-${request.status}`} style={{ fontSize: '1rem', padding: '0.5rem 1rem' }}>{request.status?.replace('_', ' ')}</span>
+                </div>
+
+                <div className="grid grid-2 gap-4 mb-4">
+                    <div>
+                        <span className="text-muted text-sm">Category</span>
+                        <p className="font-medium">{request.category}</p>
+                    </div>
+                    <div>
+                        <span className="text-muted text-sm">Priority</span>
+                        <p><span className={`badge badge-${request.priority}`}>{request.priority}</span></p>
+                    </div>
+                    <div>
+                        <span className="text-muted text-sm">Expected Resolution</span>
+                        <p>{request.sla_policy?.target_hours || 96} hours</p>
+                    </div>
+                    <div>
+                        <span className="text-muted text-sm">Created</span>
+                        <p>{request.timestamps?.created_at ? new Date(request.timestamps.created_at).toLocaleString() : 'N/A'}</p>
+                    </div>
+                </div>
+
+                <div className="mb-4">
+                    <span className="text-muted text-sm">Description</span>
+                    <p className="mt-1">{request.description}</p>
+                </div>
+
+                {request.evidence?.length > 0 && (
+                    <div className="mb-4">
+                        <span className="text-muted text-sm">Evidence</span>
+                        <div className="flex gap-2 mt-2 flex-wrap">
+                            {request.evidence.map((ev, i) => (
+                                <a key={i} href={ev.url} target="_blank" rel="noopener noreferrer" className="p-2 border rounded text-sm text-blue-600 hover:bg-gray-50">
+                                    📎 {ev.type} {i + 1}
+                                </a>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                <div className="mb-4 p-4" style={{ background: 'var(--background)', borderRadius: 'var(--radius)' }}>
+                    <h4 className="text-sm font-medium mb-2">Add Additional Evidence</h4>
+                    <div className="flex gap-2">
+                        <input
+                            type="file"
+                            accept="image/*"
+                            className="form-input text-sm"
+                            onChange={async (e) => {
+                                if (e.target.files?.[0]) {
+                                    const formData = new FormData();
+                                    formData.append('file', e.target.files[0]);
+                                    try {
+                                        const res = await client.post('/upload', formData, {
+                                            headers: { 'Content-Type': 'multipart/form-data' }
+                                        });
+                                        handleAddEvidence(res.data.url);
+                                    } catch (err) {
+                                        alert('Upload failed');
+                                    }
+                                    e.target.value = null;
+                                }
+                            }}
+                        />
+                    </div>
+                </div>
+
+                {request.location && (
+                    <div className="map-container mb-4" style={{ height: '200px' }}>
+                        <MapDisplay coordinates={request.location.coordinates} />
+                    </div>
+                )}
             </div>
 
-            {request && (
-                <div className="card">
-                    <div className="flex justify-between items-center mb-4">
-                        <h3>{request.request_id}</h3>
-                        <span className={`badge badge-${request.status}`}>{request.status.replace('_', ' ')}</span>
-                    </div>
+            {/* Timeline */}
+            <div className="card mb-4">
+                <h3 className="mb-4">Status Timeline</h3>
+                <div className="timeline">
+                    {['created_at', 'triaged_at', 'assigned_at', 'resolved_at', 'closed_at'].map(key => (
+                        <div key={key} className={`timeline-item ${request.timestamps?.[key] ? 'completed' : ''}`}>
+                            <strong>{key.replace('_at', '').replace('_', ' ')}</strong>
+                            <p className="text-xs text-muted">{request.timestamps?.[key] ? new Date(request.timestamps[key]).toLocaleString() : 'Pending'}</p>
+                        </div>
+                    ))}
+                </div>
+            </div>
 
-                    <div className="grid grid-2 gap-4 mb-4">
-                        <div><span className="text-muted">Category:</span> {request.category}</div>
-                        <div><span className="text-muted">Priority:</span> <span className={`badge badge-${request.priority}`}>{request.priority}</span></div>
-                    </div>
-
-                    <p className="mb-4">{request.description}</p>
-
-                    <h4 className="mb-2">Timeline</h4>
-                    <div className="timeline mb-4">
-                        {['created_at', 'triaged_at', 'assigned_at', 'resolved_at', 'closed_at'].map(key => (
-                            <div key={key} className={`timeline-item ${request.timestamps?.[key] ? 'completed' : ''}`}>
-                                <strong>{key.replace('_at', '').replace('_', ' ')}</strong>
-                                <p className="text-sm text-muted">{request.timestamps?.[key] ? new Date(request.timestamps[key]).toLocaleString() : 'Pending'}</p>
+            {/* Comments */}
+            <div className="card mb-4">
+                <h3 className="mb-4">Comments ({request.comments?.length || 0})</h3>
+                {request.comments?.length > 0 ? (
+                    <div className="flex flex-col gap-4 mb-4">
+                        {request.comments.map((c, i) => (
+                            <div key={i} className="p-4" style={{ background: 'var(--background)', borderRadius: 'var(--radius)' }}>
+                                <div className="flex justify-between mb-2">
+                                    <span className="font-medium">{c.author_type === 'citizen' ? 'You' : 'Staff'}</span>
+                                    <span className="text-xs text-muted">{c.created_at ? new Date(c.created_at).toLocaleString() : ''}</span>
+                                </div>
+                                <p>{c.text}</p>
                             </div>
                         ))}
                     </div>
+                ) : (
+                    <p className="text-muted mb-4">No comments yet</p>
+                )}
+                <div className="flex gap-2">
+                    <input className="form-input" value={comment} onChange={e => setComment(e.target.value)} placeholder="Add a comment..." style={{ flex: 1 }} />
+                    <button className="btn btn-primary" onClick={handleComment}>Send</button>
+                </div>
+            </div>
 
-                    {(request.status === 'resolved' || request.status === 'closed') && !request.rating && (
-                        <div className="p-4" style={{ background: 'var(--background)', borderRadius: 'var(--radius)' }}>
-                            <h4 className="mb-2">Rate This Service</h4>
-                            <div className="stars mb-2">
-                                {[1, 2, 3, 4, 5].map(n => (
-                                    <span key={n} className={`star ${rating.stars >= n ? 'filled' : ''}`} onClick={() => setRating({ ...rating, stars: n })}>★</span>
-                                ))}
-                            </div>
-                            <textarea className="form-textarea" value={rating.comment} onChange={e => setRating({ ...rating, comment: e.target.value })} placeholder="Leave a comment (optional)" />
-                            <button className="btn btn-primary mt-2" onClick={handleRate} disabled={rating.stars === 0}>Submit Rating</button>
-                        </div>
-                    )}
+            {/* Rating */}
+            {canRate && (
+                <div className="card">
+                    <h3 className="mb-4">Rate This Service</h3>
+                    <div className="stars mb-4">
+                        {[1, 2, 3, 4, 5].map(n => (
+                            <span key={n} className={`star ${rating.stars >= n ? 'filled' : ''}`} onClick={() => setRating({ ...rating, stars: n })}>★</span>
+                        ))}
+                    </div>
+                    <textarea className="form-textarea mb-4" value={rating.comment} onChange={e => setRating({ ...rating, comment: e.target.value })} placeholder="Leave a comment (optional)" />
 
-                    {request.rating && (
-                        <div className="p-4" style={{ background: '#dcfce7', borderRadius: 'var(--radius)' }}>
-                            <strong>Your Rating:</strong> {'★'.repeat(request.rating.stars)}{'☆'.repeat(5 - request.rating.stars)}
-                            {request.rating.comment && <p className="mt-2">{request.rating.comment}</p>}
-                        </div>
-                    )}
+                    <div className="mb-4">
+                        <label className="flex items-center gap-2">
+                            <input type="checkbox" checked={rating.dispute} onChange={e => setRating({ ...rating, dispute: e.target.checked })} />
+                            <span className="text-warning">Flag issue with resolution (dispute)</span>
+                        </label>
+                        {rating.dispute && (
+                            <textarea className="form-textarea mt-2" value={rating.dispute_reason} onChange={e => setRating({ ...rating, dispute_reason: e.target.value })} placeholder="Explain the issue..." />
+                        )}
+                    </div>
+
+                    <button className="btn btn-primary" onClick={handleRate}>Submit Rating</button>
+                </div>
+            )}
+
+            {request.rating && (
+                <div className="card" style={{ background: '#dcfce7' }}>
+                    <h3 className="mb-2">Your Rating</h3>
+                    <div className="stars mb-2">
+                        {'★'.repeat(request.rating.stars)}{'☆'.repeat(5 - request.rating.stars)}
+                    </div>
+                    {request.rating.comment && <p className="text-muted">{request.rating.comment}</p>}
+                    {request.rating.dispute && <p className="text-warning mt-2">⚠️ Dispute flagged: {request.rating.dispute_reason}</p>}
                 </div>
             )}
         </div>
@@ -524,13 +866,13 @@ function MyRequests() {
     const { citizen } = useContext(CitizenContext);
     const [requests, setRequests] = useState([]);
     const [loading, setLoading] = useState(true);
+    const navigate = useNavigate();
 
     useEffect(() => {
-        // In a real app, we'd filter by citizen_id on the backend
-        client.get(`/requests/?limit=50`).then(res => {
-            // Filter client-side for now
-            const myReqs = res.data.filter(r => r.citizen_id === citizen._id);
-            setRequests(myReqs);
+        client.get(`/citizens/${citizen._id}/requests`).then(res => {
+            setRequests(res.data);
+            setLoading(false);
+        }).catch(() => {
             setLoading(false);
         });
     }, [citizen._id]);
@@ -539,7 +881,11 @@ function MyRequests() {
 
     return (
         <div>
-            <h2 className="mb-4">My Requests</h2>
+            <div className="flex justify-between items-center mb-4">
+                <h2>My Requests ({requests.length})</h2>
+                <Link to="/citizen/report" className="btn btn-primary">+ New Request</Link>
+            </div>
+
             {requests.length === 0 ? (
                 <div className="empty-state card">
                     <div className="empty-state-icon">📭</div>
@@ -549,14 +895,14 @@ function MyRequests() {
             ) : (
                 <div className="flex flex-col gap-2">
                     {requests.map(req => (
-                        <div key={req.request_id} className="request-item">
+                        <div key={req.request_id} className="request-item" onClick={() => navigate(`/citizen/request/${req.request_id}`)} style={{ cursor: 'pointer' }}>
                             <div className="request-info">
                                 <h4>{req.request_id} - {req.category}</h4>
                                 <p>{req.description?.substring(0, 100)}...</p>
                             </div>
                             <div className="request-meta">
-                                <span className={`badge badge-${req.status}`}>{req.status.replace('_', ' ')}</span>
-                                <p className="text-xs text-muted mt-1">{new Date(req.timestamps?.created_at).toLocaleDateString()}</p>
+                                <span className={`badge badge-${req.status}`}>{req.status?.replace('_', ' ')}</span>
+                                <p className="text-xs text-muted mt-1">{req.timestamps?.created_at ? new Date(req.timestamps.created_at).toLocaleDateString() : ''}</p>
                             </div>
                         </div>
                     ))}

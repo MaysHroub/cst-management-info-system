@@ -11,20 +11,26 @@ db = get_database()
 
 @router.post("/")
 async def create_agent(agent: AgentCreate):
-    # Check if agent_code exists
-    existing = db.service_agents.find_one({"agent_code": agent.agent_code})
-    if existing:
-        raise HTTPException(status_code=400, detail="Agent code already exists")
-    
-    new_agent = agent.dict()
-    new_agent["created_at"] = datetime.utcnow()
-    new_agent["active"] = True
-    new_agent["current_workload"] = 0
-    
-    result = db.service_agents.insert_one(new_agent)
-    created = db.service_agents.find_one({"_id": result.inserted_id})
-    created["_id"] = str(created["_id"])
-    return created
+    try:
+        # Check if agent_code exists
+        existing = db.service_agents.find_one({"agent_code": agent.agent_code})
+        if existing:
+            raise HTTPException(status_code=400, detail="Agent code already exists")
+        
+        new_agent = agent.dict()
+        new_agent["created_at"] = datetime.utcnow()
+        new_agent["active"] = True
+        new_agent["current_workload"] = 0
+        
+        result = db.service_agents.insert_one(new_agent)
+        created = db.service_agents.find_one({"_id": result.inserted_id})
+        created["_id"] = str(created["_id"])
+        return created
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/")
 async def list_agents(active_only: bool = True):
@@ -98,7 +104,8 @@ async def assign_request_to_best_agent(request_id: str, agent_id: Optional[str] 
         if not chosen_agent:
             raise HTTPException(status_code=404, detail="Agent not found")
     else:
-        # Auto-assignment based on geo coverage
+        # Auto-assignment based on geo coverage + skills + shift
+        # 1. Geo Coverage
         query = {
             "coverage.geo_fence": {
                 "$geoIntersects": {
@@ -113,6 +120,43 @@ async def assign_request_to_best_agent(request_id: str, agent_id: Optional[str] 
         
         candidates = list(db.service_agents.find(query))
         
+        # 2. Skill Match
+        # Mapping category to skills
+        CATEGORY_SKILLS = {
+            "pothole": "road",
+            "signage": "road",
+            "lighting": "road",
+            "water_leak": "water",
+            "sewage": "water",
+            "trash": "waste"
+        }
+        required_skill = CATEGORY_SKILLS.get(req["category"], "general")
+        
+        skill_candidates = [c for c in candidates if required_skill in c.get("skills", []) or "general" in c.get("skills", [])]
+        if skill_candidates:
+            candidates = skill_candidates
+        # If no skill match, keep all candidates (fallback)
+        
+        # 3. Shift Availability
+        now = datetime.utcnow()
+        current_day = now.strftime("%a") # Mon, Tue...
+        current_time = now.strftime("%H:%M")
+        
+        def is_on_shift(agent):
+            schedule = agent.get("schedule", {})
+            if schedule.get("on_call", False):
+                return True
+            for shift in schedule.get("shifts", []):
+                if shift["day"] == current_day:
+                    if shift["start"] <= current_time <= shift["end"]:
+                        return True
+            return False
+            
+        shift_candidates = [c for c in candidates if is_on_shift(c)]
+        if shift_candidates:
+            candidates = shift_candidates
+        # If none on shift, ignore restriction (or maybe fallback to on_call)
+        
         if not candidates:
             # Fallback: get any active agent
             candidates = list(db.service_agents.find({"active": True}).limit(5))
@@ -120,7 +164,7 @@ async def assign_request_to_best_agent(request_id: str, agent_id: Optional[str] 
         if not candidates:
             raise HTTPException(status_code=404, detail="No agents available")
         
-        # Simple workload balancing: pick agent with least active tasks
+        # 4. Workload Balancing
         for c in candidates:
             c["_workload"] = db.service_requests.count_documents({
                 "assigned_agent_id": str(c["_id"]),

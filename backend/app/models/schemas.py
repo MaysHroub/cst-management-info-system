@@ -24,42 +24,74 @@ class CitizenVerificationState(str, Enum):
     VERIFIED = "verified"
 
 # --- Shared ---
-# Represents an ObjectId field in the database.
-# It will be represented as a str on the model so that Pydantic can serialize it to JSON.
 PyObjectId = Annotated[str, BeforeValidator(str)]
 
 class MongoBaseModel(BaseModel):
-    # The _id field will be mapped to the id field in the model.
     id: Optional[PyObjectId] = Field(alias="_id", default=None)
 
     model_config = ConfigDict(
         populate_by_name=True,
         arbitrary_types_allowed=True,
-        json_encoders={ObjectId: str}
+        json_encoders={ObjectId: str},
+        extra='allow'  # Allow extra fields from MongoDB
     )
 
 # --- Module 1: Service Requests ---
 
 class Location(BaseModel):
     type: str = "Point"
-    coordinates: List[float] # [long, lat]
+    coordinates: List[float]
     address_hint: Optional[str] = None
     zone_id: Optional[str] = None
 
+    model_config = ConfigDict(extra='allow')
+
 class WorkflowState(BaseModel):
     current_state: RequestStatus = RequestStatus.NEW
-    allowed_next: List[RequestStatus] = [RequestStatus.TRIAGED]
+    allowed_next: List[str] = ["triaged"]
     transition_rules_version: str = "v1.0"
 
+    model_config = ConfigDict(extra='allow')
+
 class SLAPolicy(BaseModel):
-    policy_id: str
-    target_hours: int
-    breach_threshold_hours: int
+    policy_id: str = ""
+    target_hours: int = 96
+    breach_threshold_hours: int = 120
+
+    model_config = ConfigDict(extra='allow')
 
 class RequestEvidence(BaseModel):
     type: str = "photo"
     url: str
-    uploaded_at: datetime = Field(default_factory=datetime.utcnow)
+    uploaded_at: Optional[datetime] = None
+
+    model_config = ConfigDict(extra='allow')
+
+class Comment(BaseModel):
+    id: str
+    text: str
+    author_id: str
+    author_type: str = "citizen"
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(extra='allow')
+
+class Rating(BaseModel):
+    stars: int
+    comment: Optional[str] = None
+    reason_codes: List[str] = []
+    dispute: bool = False
+    dispute_reason: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(extra='allow')
+
+class Milestone(BaseModel):
+    type: str
+    timestamp: Optional[datetime] = None
+    notes: Optional[str] = None
+
+    model_config = ConfigDict(extra='allow')
 
 class ServiceRequestCreate(BaseModel):
     citizen_id: str
@@ -71,51 +103,91 @@ class ServiceRequestCreate(BaseModel):
     location: Location
     evidence: List[RequestEvidence] = []
 
-class ServiceRequest(MongoBaseModel, ServiceRequestCreate):
-    request_id: str
-    status: RequestStatus = RequestStatus.NEW
-    workflow: WorkflowState
-    timestamps: Dict[str, Optional[datetime]] = {
-        "created_at": None,
-        "triaged_at": None,
-        "assigned_at": None,
-        "resolved_at": None,
-        "closed_at": None,
-        "updated_at": None
-    }
+class ServiceRequest(MongoBaseModel):
+    request_id: Optional[str] = None
+    citizen_id: Optional[str] = None
+    anonymous: bool = False
+    category: Optional[str] = None
+    sub_category: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    location: Optional[Location] = None
+    workflow: Optional[WorkflowState] = None
+    sla_policy: Optional[SLAPolicy] = None
+    timestamps: Optional[Dict[str, Any]] = None
     assigned_agent_id: Optional[str] = None
+    evidence: List[RequestEvidence] = []
+    comments: List[Comment] = []
+    rating: Optional[Rating] = None
+    milestones: List[Milestone] = []
 
 # --- Module 2: Citizens ---
+
+class NotificationPreferences(BaseModel):
+    on_status_change: bool = True
+    on_resolution: bool = True
+    email_enabled: bool = True
+    sms_enabled: bool = False
+
+    model_config = ConfigDict(extra='allow')
+
+class PrivacySettings(BaseModel):
+    default_anonymous: bool = False
+    share_publicly_on_map: bool = True
+
+    model_config = ConfigDict(extra='allow')
 
 class ContactPreferences(BaseModel):
     preferred_contact: str = "email"
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
 
+    model_config = ConfigDict(extra='allow')
+
+class CitizenPreferences(BaseModel):
+    notifications: NotificationPreferences = NotificationPreferences()
+    privacy: PrivacySettings = PrivacySettings()
+    language: str = "en"
+
+    model_config = ConfigDict(extra='allow')
+
 class CitizenCreate(BaseModel):
     full_name: str
-    password: str  # In real app, hash this
+    password: str
     contacts: ContactPreferences
     address_zone_id: Optional[str] = None
+    preferences: Optional[CitizenPreferences] = None
 
 class Citizen(MongoBaseModel):
-    full_name: str
-    verification_state: CitizenVerificationState = CitizenVerificationState.UNVERIFIED
-    contacts: ContactPreferences
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    full_name: Optional[str] = None
+    verification_state: Optional[str] = None
+    contacts: Optional[ContactPreferences] = None
+    preferences: Optional[CitizenPreferences] = None
+    stats: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+    verified_at: Optional[datetime] = None
 
 # --- Module 3: Service Agents ---
 
 class AgentSchedule(BaseModel):
-    shifts: List[Dict[str, str]] = [] # e.g., [{"day": "Mon", "start": "08:00", "end": "16:00"}]
+    shifts: List[Dict[str, str]] = []
+    timezone: str = "Asia/Jerusalem"
+    on_call: bool = False
+
+    model_config = ConfigDict(extra='allow')
 
 class GeoFence(BaseModel):
     type: str = "Polygon"
     coordinates: List[List[List[float]]]
 
+    model_config = ConfigDict(extra='allow')
+
 class AgentCoverage(BaseModel):
     zone_ids: List[str]
     geo_fence: Optional[GeoFence] = None
+
+    model_config = ConfigDict(extra='allow')
 
 class AgentCreate(BaseModel):
     agent_code: str
@@ -125,6 +197,13 @@ class AgentCreate(BaseModel):
     coverage: AgentCoverage
     schedule: AgentSchedule
 
-class Agent(MongoBaseModel, AgentCreate):
+class Agent(MongoBaseModel):
+    agent_code: Optional[str] = None
+    name: Optional[str] = None
+    department: Optional[str] = None
+    skills: List[str] = []
+    coverage: Optional[AgentCoverage] = None
+    schedule: Optional[AgentSchedule] = None
     active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: Optional[datetime] = None
+    current_workload: int = 0

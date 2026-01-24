@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Body, Query
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 from bson import ObjectId
 from app.database import get_database
-from app.models.schemas import ServiceRequest, ServiceRequestCreate, RequestStatus, Priority
+from app.models.schemas import ServiceRequestCreate, RequestStatus, Priority
 from app.utils.common import generate_request_id, get_allowed_transitions
 
 router = APIRouter(prefix="/requests", tags=["Service Requests"])
@@ -17,17 +17,24 @@ SLA_POLICIES = {
     "low": {"target_hours": 168, "breach_threshold_hours": 240}
 }
 
-@router.post("/", response_model=ServiceRequest)
+def serialize_doc(doc):
+    """Convert MongoDB document to JSON-serializable dict"""
+    if doc is None:
+        return None
+    doc["_id"] = str(doc["_id"])
+    return doc
+
+@router.post("/")
 async def create_request(request: ServiceRequestCreate):
     count = db.service_requests.count_documents({}) + 1
     req_id = generate_request_id(count)
     
     new_request = request.dict()
     new_request["request_id"] = req_id
-    new_request["status"] = RequestStatus.NEW
+    new_request["status"] = RequestStatus.NEW.value
     new_request["workflow"] = {
-        "current_state": RequestStatus.NEW,
-        "allowed_next": get_allowed_transitions(RequestStatus.NEW),
+        "current_state": RequestStatus.NEW.value,
+        "allowed_next": get_allowed_transitions(RequestStatus.NEW.value),
         "transition_rules_version": "v1.0"
     }
     
@@ -56,31 +63,35 @@ async def create_request(request: ServiceRequestCreate):
     created_request = db.service_requests.find_one({"_id": result.inserted_id})
     
     # Log to performance_logs
-    db.performance_logs.insert_one({
-        "request_id": req_id,
-        "event_stream": [{
-            "type": "created",
-            "by": {"actor_type": "citizen", "actor_id": request.citizen_id},
-            "at": datetime.utcnow(),
-            "meta": {"channel": "web"}
-        }],
-        "computed_kpis": {
-            "resolution_minutes": None,
-            "sla_target_hours": sla["target_hours"],
-            "sla_state": "on_time",
-            "escalation_count": 0
-        },
-        "citizen_feedback": None
-    })
+    try:
+        db.performance_logs.insert_one({
+            "request_id": req_id,
+            "event_stream": [{
+                "type": "created",
+                "by": {"actor_type": "citizen", "actor_id": request.citizen_id},
+                "at": datetime.utcnow(),
+                "meta": {"channel": "web", "anonymous": request.anonymous}
+            }],
+            "computed_kpis": {
+                "resolution_minutes": None,
+                "sla_target_hours": sla["target_hours"],
+                "sla_state": "on_time",
+                "escalation_count": 0
+            },
+            "citizen_feedback": None
+        })
+    except Exception as e:
+        print(f"Performance log error: {e}")
     
-    return created_request
+    return serialize_doc(created_request)
 
-@router.get("/", response_model=List[ServiceRequest])
+@router.get("/")
 async def list_requests(
-    status: Optional[RequestStatus] = None,
+    status: Optional[str] = None,
     category: Optional[str] = None,
     priority: Optional[str] = None,
     agent_id: Optional[str] = None,
+    citizen_id: Optional[str] = None,
     limit: int = 50,
     skip: int = 0
 ):
@@ -93,19 +104,21 @@ async def list_requests(
         query["priority"] = priority
     if agent_id:
         query["assigned_agent_id"] = agent_id
+    if citizen_id:
+        query["citizen_id"] = citizen_id
         
     requests = list(db.service_requests.find(query).sort("timestamps.created_at", -1).skip(skip).limit(limit))
-    return requests
+    return [serialize_doc(r) for r in requests]
 
-@router.get("/{request_id}", response_model=ServiceRequest)
+@router.get("/{request_id}")
 async def get_request(request_id: str):
     req = db.service_requests.find_one({"request_id": request_id})
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
-    return req
+    return serialize_doc(req)
 
-@router.patch("/{request_id}/transition", response_model=ServiceRequest)
-async def transition_request(request_id: str, new_status: RequestStatus = Body(..., embed=True)):
+@router.patch("/{request_id}/transition")
+async def transition_request(request_id: str, new_status: str = Body(..., embed=True)):
     req = db.service_requests.find_one({"request_id": request_id})
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -123,32 +136,41 @@ async def transition_request(request_id: str, new_status: RequestStatus = Body(.
         "timestamps.updated_at": datetime.utcnow()
     }
     
-    if new_status == RequestStatus.TRIAGED:
+    if new_status == "triaged":
         update_data["timestamps.triaged_at"] = datetime.utcnow()
-    elif new_status == RequestStatus.ASSIGNED:
+    elif new_status == "assigned":
         update_data["timestamps.assigned_at"] = datetime.utcnow()
-    elif new_status == RequestStatus.RESOLVED:
+    elif new_status == "resolved":
         update_data["timestamps.resolved_at"] = datetime.utcnow()
-    elif new_status == RequestStatus.CLOSED:
+    elif new_status == "closed":
         update_data["timestamps.closed_at"] = datetime.utcnow()
 
     db.service_requests.update_one({"request_id": request_id}, {"$set": update_data})
     
     # Log event
-    db.performance_logs.update_one(
-        {"request_id": request_id},
-        {"$push": {"event_stream": {
-            "type": new_status,
-            "by": {"actor_type": "staff", "actor_id": "system"},
-            "at": datetime.utcnow(),
-            "meta": {}
-        }}}
-    )
+    try:
+        db.performance_logs.update_one(
+            {"request_id": request_id},
+            {"$push": {"event_stream": {
+                "type": new_status,
+                "by": {"actor_type": "staff", "actor_id": "system"},
+                "at": datetime.utcnow(),
+                "meta": {}
+            }}}
+        )
+    except Exception as e:
+        print(f"Performance log error: {e}")
     
-    return db.service_requests.find_one({"request_id": request_id})
+    return serialize_doc(db.service_requests.find_one({"request_id": request_id}))
 
 @router.post("/{request_id}/comment")
-async def add_comment(request_id: str, text: str = Body(...), author_id: str = Body(...)):
+async def add_comment(
+    request_id: str, 
+    text: str = Body(...), 
+    author_id: str = Body(...),
+    author_type: str = Body("citizen")
+):
+    """Add a comment to a request - threaded comments for citizen interaction"""
     req = db.service_requests.find_one({"request_id": request_id})
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -157,18 +179,30 @@ async def add_comment(request_id: str, text: str = Body(...), author_id: str = B
         "id": str(ObjectId()),
         "text": text,
         "author_id": author_id,
+        "author_type": author_type,
         "created_at": datetime.utcnow()
     }
     
     db.service_requests.update_one(
         {"request_id": request_id},
-        {"$push": {"comments": comment}}
+        {
+            "$push": {"comments": comment},
+            "$set": {"timestamps.updated_at": datetime.utcnow()}
+        }
     )
     
     return {"message": "Comment added", "comment": comment}
 
 @router.post("/{request_id}/rating")
-async def rate_request(request_id: str, stars: int = Body(..., ge=1, le=5), comment: str = Body(None)):
+async def rate_request(
+    request_id: str, 
+    stars: int = Body(..., ge=1, le=5), 
+    comment: str = Body(None),
+    reason_codes: List[str] = Body([]),
+    dispute: bool = Body(False),
+    dispute_reason: str = Body(None)
+):
+    """Rate a resolved/closed request with optional dispute flagging"""
     req = db.service_requests.find_one({"request_id": request_id})
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -179,24 +213,62 @@ async def rate_request(request_id: str, stars: int = Body(..., ge=1, le=5), comm
     rating = {
         "stars": stars,
         "comment": comment,
+        "reason_codes": reason_codes,
+        "dispute": dispute,
+        "dispute_reason": dispute_reason,
         "created_at": datetime.utcnow()
     }
     
     db.service_requests.update_one(
         {"request_id": request_id},
-        {"$set": {"rating": rating}}
+        {"$set": {"rating": rating, "timestamps.updated_at": datetime.utcnow()}}
     )
     
     # Update performance log
-    db.performance_logs.update_one(
-        {"request_id": request_id},
-        {"$set": {"citizen_feedback": rating}}
-    )
+    try:
+        db.performance_logs.update_one(
+            {"request_id": request_id},
+            {"$set": {"citizen_feedback": rating}}
+        )
+    except Exception as e:
+        print(f"Performance log error: {e}")
     
     return {"message": "Rating submitted", "rating": rating}
 
+@router.post("/{request_id}/evidence")
+async def add_evidence(
+    request_id: str,
+    evidence_type: str = Body("photo"),
+    url: str = Body(...)
+):
+    """Add additional evidence to a request"""
+    req = db.service_requests.find_one({"request_id": request_id})
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    evidence = {
+        "type": evidence_type,
+        "url": url,
+        "uploaded_at": datetime.utcnow()
+    }
+    
+    db.service_requests.update_one(
+        {"request_id": request_id},
+        {
+            "$push": {"evidence": evidence},
+            "$set": {"timestamps.updated_at": datetime.utcnow()}
+        }
+    )
+    
+    return {"message": "Evidence added", "evidence": evidence}
+
 @router.patch("/{request_id}/milestone")
-async def add_milestone(request_id: str, milestone_type: str = Body(...), notes: str = Body(None)):
+async def add_milestone(
+    request_id: str, 
+    milestone_type: str = Body(...), 
+    notes: str = Body(None),
+    evidence: List[Dict[str, str]] = Body([])
+):
     """Add milestone: arrived, work_started, resolved"""
     req = db.service_requests.find_one({"request_id": request_id})
     if not req:
@@ -209,18 +281,19 @@ async def add_milestone(request_id: str, milestone_type: str = Body(...), notes:
     milestone = {
         "type": milestone_type,
         "timestamp": datetime.utcnow(),
-        "notes": notes
+        "notes": notes,
+        "evidence": evidence
     }
     
     update = {"$push": {"milestones": milestone}, "$set": {"timestamps.updated_at": datetime.utcnow()}}
     
     # Auto-transition status based on milestone
     if milestone_type == "arrived" or milestone_type == "work_started":
-        update["$set"]["status"] = RequestStatus.IN_PROGRESS
-        update["$set"]["workflow.current_state"] = RequestStatus.IN_PROGRESS
+        update["$set"]["status"] = "in_progress"
+        update["$set"]["workflow.current_state"] = "in_progress"
     elif milestone_type == "resolved":
-        update["$set"]["status"] = RequestStatus.RESOLVED
-        update["$set"]["workflow.current_state"] = RequestStatus.RESOLVED
+        update["$set"]["status"] = "resolved"
+        update["$set"]["workflow.current_state"] = "resolved"
         update["$set"]["timestamps.resolved_at"] = datetime.utcnow()
     
     db.service_requests.update_one({"request_id": request_id}, update)
@@ -234,17 +307,20 @@ async def escalate_request(request_id: str, reason: str = Body(...)):
         raise HTTPException(status_code=404, detail="Request not found")
     
     # Log escalation event
-    db.performance_logs.update_one(
-        {"request_id": request_id},
-        {
-            "$push": {"event_stream": {
-                "type": "escalation",
-                "by": {"actor_type": "system", "actor_id": "manual"},
-                "at": datetime.utcnow(),
-                "meta": {"reason": reason}
-            }},
-            "$inc": {"computed_kpis.escalation_count": 1}
-        }
-    )
+    try:
+        db.performance_logs.update_one(
+            {"request_id": request_id},
+            {
+                "$push": {"event_stream": {
+                    "type": "escalation",
+                    "by": {"actor_type": "system", "actor_id": "manual"},
+                    "at": datetime.utcnow(),
+                    "meta": {"reason": reason}
+                }},
+                "$inc": {"computed_kpis.escalation_count": 1}
+            }
+        )
+    except Exception as e:
+        print(f"Performance log error: {e}")
     
     return {"message": "Request escalated", "reason": reason}
