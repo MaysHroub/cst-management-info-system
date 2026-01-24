@@ -2,6 +2,21 @@
 
 Advanced Municipal Service Tracking System with Real-time Geo-feeds.
 
+## Team Contribution
+
+This project was developed collaboratively by **Bailasan Qa’dan** and **Mays Hroub**.  
+While the system was designed, reviewed, and integrated jointly, the primary module responsibilities were divided to organize development work as follows:
+
+- **Bailasan Qa’dan**
+  - Module 1: Service Request Management
+  - Module 3: Service Agents & Assignment
+
+- **Mays Hroub**
+  - Module 2: Citizen Portal & Profiles
+  - Module 4: Data Analysis & Visualization
+
+Despite this division, **both team members actively collaborated across all modules**, contributing to system design, API integration, debugging, testing, and overall architectural decisions. All components were reviewed together to ensure consistency, correctness, and alignment with the project requirements.
+
 ## Overview
 
 CST is a comprehensive platform for municipalities to receive, triage, assign, and resolve citizen-reported service failures. It features:
