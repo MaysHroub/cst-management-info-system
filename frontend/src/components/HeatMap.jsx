@@ -10,17 +10,23 @@ const priorityColors = {
 };
 
 const HeatMap = ({ geojson, zoneJson }) => {
+    console.log('HeatMap render - geojson:', geojson);
+    console.log('HeatMap render - zoneJson:', zoneJson);
+    
     const features = geojson?.features || [];
+    console.log('HeatMap render - features count:', features.length);
 
     // Calculate center from features or use default
     let center = [31.9038, 35.2050]; // Ramallah default
     if (features.length > 0) {
-        const lats = features.map(f => f.geometry.coordinates[1]);
-        const lngs = features.map(f => f.geometry.coordinates[0]);
-        center = [
-            lats.reduce((a, b) => a + b, 0) / lats.length,
-            lngs.reduce((a, b) => a + b, 0) / lngs.length
-        ];
+        const lats = features.map(f => f.geometry?.coordinates?.[1]).filter(Boolean);
+        const lngs = features.map(f => f.geometry?.coordinates?.[0]).filter(Boolean);
+        if (lats.length > 0 && lngs.length > 0) {
+            center = [
+                lats.reduce((a, b) => a + b, 0) / lats.length,
+                lngs.reduce((a, b) => a + b, 0) / lngs.length
+            ];
+        }
     }
 
     const zoneStyle = (feature) => {
@@ -55,8 +61,18 @@ const HeatMap = ({ geojson, zoneJson }) => {
 
             {/* Request Points Layer */}
             {features.map((feature, idx) => {
+                if (!feature?.geometry?.coordinates) {
+                    console.warn('Skipping feature without valid geometry:', feature);
+                    return null;
+                }
+                
                 const [lng, lat] = feature.geometry.coordinates;
-                const props = feature.properties;
+                if (!lat || !lng) {
+                    console.warn('Skipping feature with invalid coordinates:', feature);
+                    return null;
+                }
+                
+                const props = feature.properties || {};
                 const color = priorityColors[props.priority] || '#6b7280';
                 const radius = 8 + (props.weight || 1) * 4;
 

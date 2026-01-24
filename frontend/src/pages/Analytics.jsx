@@ -245,19 +245,23 @@ function MapTab({ zoneGeoJson }) {
         if (mapFilters.category) params.append('category', mapFilters.category);
         if (mapFilters.priority) params.append('priority', mapFilters.priority);
         
-        // Always include the include_closed parameter
-        params.append('include_closed', mapFilters.status === 'all' ? 'true' : 'false');
-        
-        // Add cache busting
-        params.append('_t', Date.now().toString());
+        // Pass include_closed parameter
+        const includeClosed = mapFilters.status === 'all';
+        params.append('include_closed', includeClosed);
 
-        console.log('Fetching heatmap with params:', params.toString());
-        client.get(`/analytics/heatmap?${params.toString()}`).then(res => {
-            console.log('Heatmap response features count:', res.data?.features?.length || 0);
-            setHeatmapData(res.data);
-        }).catch(err => {
-            console.error('Heatmap fetch error:', err);
-        });
+        console.log('Fetching heatmap with filters:', { ...mapFilters, includeClosed });
+        console.log('API URL:', `/analytics/heatmap?${params.toString()}`);
+        
+        client.get(`/analytics/heatmap?${params.toString()}`)
+            .then(res => {
+                console.log('Heatmap response:', res.data);
+                console.log('Features count:', res.data?.features?.length || 0);
+                setHeatmapData(res.data);
+            })
+            .catch(err => {
+                console.error('Heatmap fetch error:', err);
+                console.error('Error details:', err.response?.data);
+            });
     }, [mapFilters]);
 
     return (

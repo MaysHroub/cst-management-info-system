@@ -197,7 +197,10 @@ async def get_heatmap_feed(category: Optional[str] = None, priority: Optional[st
         })
     
     res = {"type": "FeatureCollection", "features": features}
-    print(f\"  - Returning {len(features)} features in GeoJSON\")\n    # Cache disabled for debugging\n    # set_cache(cache_key, res)\n    return res
+    print(f"  - Returning {len(features)} features in GeoJSON")
+    # Cache disabled for debugging
+    # set_cache(cache_key, res)
+    return res
 
 @router.get("/zones/geojson")
 async def get_zone_summaries():
