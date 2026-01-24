@@ -11,7 +11,7 @@ While the system was designed, reviewed, and integrated jointly, the primary mod
   - Module 1: Service Request Management
   - Module 3: Service Agents & Assignment
 
-- **Mays Hroub**
+- **Mays-alreem Hroub**
   - Module 2: Citizen Portal & Profiles
   - Module 4: Data Analysis & Visualization
 
