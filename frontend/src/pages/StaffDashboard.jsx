@@ -19,6 +19,7 @@ function StaffDashboard() {
                     <Route path="/requests/:requestId" element={<RequestDetail />} />
                     <Route path="/agents" element={<AgentsManagement />} />
                     <Route path="/zones" element={<ZonesManagement />} />
+                    <Route path="/sla" element={<SLAMonitoring />} />
                 </Routes>
             </div>
         </div>
@@ -50,6 +51,7 @@ function Dashboard() {
                 <Link to="/staff/requests" className="btn btn-primary">Manage Requests</Link>
                 <Link to="/staff/agents" className="btn btn-outline">Manage Agents</Link>
                 <Link to="/staff/zones" className="btn btn-outline">Manage Zones</Link>
+                <Link to="/staff/sla" className="btn btn-warning">SLA Monitor</Link>
             </div>
 
             <div className="grid grid-4 gap-4 mb-6">
@@ -194,16 +196,21 @@ function RequestDetail() {
     const { requestId } = useParams();
     const [request, setRequest] = useState(null);
     const [agents, setAgents] = useState([]);
+    const [slaStatus, setSlaStatus] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [showResolveForm, setShowResolveForm] = useState(false);
+    const [resolveForm, setResolveForm] = useState({ notes: '', evidence: '' });
     const navigate = useNavigate();
 
     const fetchData = async () => {
-        const [reqRes, agentRes] = await Promise.all([
+        const [reqRes, agentRes, slaRes] = await Promise.all([
             client.get(`/requests/${requestId}`),
-            client.get('/agents/')
+            client.get('/agents/'),
+            client.get(`/requests/${requestId}/sla-status`).catch(() => ({ data: null }))
         ]);
         setRequest(reqRes.data);
         setAgents(agentRes.data);
+        setSlaStatus(slaRes.data);
         setLoading(false);
     };
 
@@ -228,10 +235,28 @@ function RequestDetail() {
         }
     };
 
+    const handleResolve = async (e) => {
+        e.preventDefault();
+        try {
+            const evidenceUrls = resolveForm.evidence.split(',').map(u => u.trim()).filter(Boolean);
+            await client.post(`/requests/${requestId}/resolve`, {
+                resolution_notes: resolveForm.notes,
+                evidence_urls: evidenceUrls,
+                resolved_by: 'staff-user'
+            });
+            setShowResolveForm(false);
+            fetchData();
+            alert('Request marked as resolved successfully!');
+        } catch (err) {
+            alert(err.response?.data?.detail || 'Failed to resolve request');
+        }
+    };
+
     if (loading) return <div className="loading"><div className="spinner"></div> Loading...</div>;
     if (!request) return <div>Request not found</div>;
 
     const allowedNext = request.workflow?.allowed_next || [];
+    const canResolve = ['assigned', 'in_progress'].includes(request.status);
 
     return (
         <div>
@@ -257,16 +282,32 @@ function RequestDetail() {
                             <span className="text-muted text-sm">Created</span>
                             <p>{new Date(request.timestamps?.created_at).toLocaleString()}</p>
                         </div>
-                        <div>
-                            <span className="text-muted text-sm">Citizen ID</span>
-                            <p>{request.citizen_id || 'Anonymous'}</p>
-                        </div>
                     </div>
 
-                    <div className="mb-4">
-                        <span className="text-muted text-sm">Description</span>
-                        <p className="mt-1">{request.description}</p>
-                    </div>
+                    {request.triage_metadata && request.triage_metadata.priority_escalated && (
+                        <div className="mb-4 p-3" style={{ background: '#fef3c7', borderRadius: 'var(--radius)', border: '1px solid #fbbf24' }}>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span style={{ fontSize: '1.2rem' }}>⚠️</span>
+                                <strong style={{ color: '#92400e' }}>Priority Escalated</strong>
+                            </div>
+                            <div className="text-sm" style={{ color: '#92400e' }}>
+                                <p>Original: <strong>{request.triage_metadata.original_priority}</strong> → Final: <strong>{request.priority}</strong></p>
+                                {request.triage_metadata.escalation_reason && (
+                                    <p className="mt-1">Reason: {request.triage_metadata.escalation_reason}</p>
+                                )}
+                                {request.triage_metadata.high_impact_flag && (
+                                    <p className="mt-1">🏥 High-Impact Location Detected</p>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {request.description && (
+                        <div className="mb-4">
+                            <span className="text-muted text-sm">Description</span>
+                            <p>{request.description}</p>
+                        </div>
+                    )}
 
                     {request.location && (
                         <div className="map-container mb-4">
@@ -275,16 +316,102 @@ function RequestDetail() {
                     )}
 
                     <h4 className="mb-2">Actions</h4>
-                    <div className="flex gap-2 flex-wrap">
+                    <div className="flex gap-2 flex-wrap mb-4">
                         {allowedNext.map(status => (
                             <button key={status} className="btn btn-outline" onClick={() => handleTransition(status)}>
                                 Move to {status.replace('_', ' ')}
                             </button>
                         ))}
+                        {canResolve && (
+                            <button className="btn btn-primary" onClick={() => setShowResolveForm(true)}>
+                                ✓ Mark as Resolved
+                            </button>
+                        )}
                     </div>
+
+                    {showResolveForm && (
+                        <div className="card mb-4" style={{ background: 'var(--background)' }}>
+                            <h4 className="mb-3">Resolve Request</h4>
+                            <form onSubmit={handleResolve}>
+                                <div className="form-group mb-3">
+                                    <label className="form-label">Resolution Notes *</label>
+                                    <textarea 
+                                        className="form-input" 
+                                        rows="4"
+                                        value={resolveForm.notes}
+                                        onChange={e => setResolveForm({ ...resolveForm, notes: e.target.value })}
+                                        placeholder="Describe the work completed and resolution..."
+                                        required
+                                    />
+                                </div>
+                                <div className="form-group mb-3">
+                                    <label className="form-label">Evidence URLs (comma-separated)</label>
+                                    <input 
+                                        className="form-input"
+                                        value={resolveForm.evidence}
+                                        onChange={e => setResolveForm({ ...resolveForm, evidence: e.target.value })}
+                                        placeholder="http://example.com/photo1.jpg, http://example.com/photo2.jpg"
+                                    />
+                                    <p className="text-xs text-muted mt-1">Upload photos or documents showing completed work</p>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button type="submit" className="btn btn-primary">Submit Resolution</button>
+                                    <button type="button" className="btn btn-ghost" onClick={() => setShowResolveForm(false)}>Cancel</button>
+                                </div>
+                            </form>
+                        </div>
+                    )}
                 </div>
 
                 <div>
+                    {slaStatus && (
+                        <div className={`card mb-4 ${slaStatus.sla_state === 'breached' ? 'border-danger' : slaStatus.sla_state === 'at_risk' ? 'border-warning' : ''}`}>
+                            <h3 className="card-title mb-3">SLA Status</h3>
+                            <div className="mb-3">
+                                <span className={`badge ${slaStatus.sla_state === 'breached' ? 'badge-closed' : slaStatus.sla_state === 'at_risk' ? 'badge-high' : 'badge-resolved'}`}>
+                                    {slaStatus.sla_state === 'breached' ? '⚠️ BREACHED' : slaStatus.sla_state === 'at_risk' ? '⏰ AT RISK' : '✓ On Time'}
+                                </span>
+                            </div>
+                            {slaStatus.status === 'resolved' ? (
+                                <>
+                                    <div className="text-sm mb-2">
+                                        <span className="text-muted">Resolution Time:</span>
+                                        <strong className="ml-2">{slaStatus.resolution_hours}h</strong>
+                                    </div>
+                                    <div className="text-sm">
+                                        <span className="text-muted">Target:</span>
+                                        <strong className="ml-2">{slaStatus.target_hours}h</strong>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="text-sm mb-2">
+                                        <span className="text-muted">Age:</span>
+                                        <strong className="ml-2">{slaStatus.age_hours}h</strong>
+                                    </div>
+                                    <div className="text-sm mb-2">
+                                        <span className="text-muted">Target:</span>
+                                        <strong className="ml-2">{slaStatus.target_hours}h</strong>
+                                    </div>
+                                    <div className="text-sm mb-2">
+                                        <span className="text-muted">Breach Threshold:</span>
+                                        <strong className="ml-2">{slaStatus.breach_hours}h</strong>
+                                    </div>
+                                    {slaStatus.time_remaining_to_breach > 0 ? (
+                                        <div className="text-sm">
+                                            <span className="text-muted">Time to Breach:</span>
+                                            <strong className="ml-2">{slaStatus.time_remaining_to_breach}h</strong>
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-danger">
+                                            <strong>Overdue by {Math.abs(slaStatus.time_remaining_to_breach)}h</strong>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    )}
+
                     <div className="card mb-4">
                         <h3 className="card-title mb-4">Assignment</h3>
                         {request.assigned_agent_id ? (
@@ -635,6 +762,122 @@ function ZonesManagement() {
                 ))}
                 {zones.length === 0 && <p className="text-center p-8 text-muted" style={{ gridColumn: 'span 3' }}>No zones defined yet.</p>}
             </div>
+        </div>
+    );
+}
+
+function SLAMonitoring() {
+    const [slaData, setSlaData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const navigate = useNavigate();
+
+    useEffect(() => {
+        client.get('/requests/sla/at-risk').then(res => {
+            setSlaData(res.data);
+            setLoading(false);
+        });
+    }, []);
+
+    const formatAge = (hours) => {
+        if (hours < 24) return `${hours}h`;
+        const days = Math.floor(hours / 24);
+        const remainingHours = hours % 24;
+        return `${days}d ${remainingHours}h`;
+    };
+
+    if (loading) return <div className="loading"><div className="spinner"></div> Loading SLA data...</div>;
+
+    return (
+        <div>
+            <div className="flex justify-between items-center mb-4">
+                <h2>SLA Monitoring Dashboard</h2>
+                <Link to="/staff" className="btn btn-ghost">← Back to Dashboard</Link>
+            </div>
+
+            <div className="grid grid-2 gap-4 mb-6">
+                <div className="stat-card warning">
+                    <div className="stat-value">{slaData.at_risk_count}</div>
+                    <div className="stat-label">Requests At Risk</div>
+                </div>
+                <div className="stat-card danger">
+                    <div className="stat-value">{slaData.breached_count}</div>
+                    <div className="stat-label">SLA Breached</div>
+                </div>
+            </div>
+
+            {slaData.breached_count > 0 && (
+                <div className="card mb-4" style={{ borderLeft: '4px solid var(--danger)' }}>
+                    <h3 className="card-title mb-3 text-danger">⚠️ SLA Breached Requests (Urgent)</h3>
+                    <div className="overflow-auto">
+                        <table className="table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Category</th>
+                                    <th>Priority</th>
+                                    <th>Status</th>
+                                    <th>Age</th>
+                                    <th>Target</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {slaData.breached_requests.map(req => (
+                                    <tr key={req._id}>
+                                        <td className="font-mono text-xs">{req._id?.slice(-6)}</td>
+                                        <td>{req.category}</td>
+                                        <td><span className={`badge badge-${req.priority}`}>{req.priority}</span></td>
+                                        <td><span className={`badge badge-${req.status}`}>{req.status}</span></td>
+                                        <td>{formatAge(req.age_hours)}</td>
+                                        <td>{req.target_hours}h</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            {slaData.at_risk_count > 0 && (
+                <div className="card" style={{ borderLeft: '4px solid var(--warning)' }}>
+                    <h3 className="card-title mb-3 text-warning">⏰ Requests At Risk</h3>
+                    <div className="overflow-auto">
+                        <table className="table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Category</th>
+                                    <th>Priority</th>
+                                    <th>Status</th>
+                                    <th>Age</th>
+                                    <th>Target</th>
+                                    <th>Time to Breach</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {slaData.at_risk_requests.map(req => (
+                                    <tr key={req._id}>
+                                        <td className="font-mono text-xs">{req._id?.slice(-6)}</td>
+                                        <td>{req.category}</td>
+                                        <td><span className={`badge badge-${req.priority}`}>{req.priority}</span></td>
+                                        <td><span className={`badge badge-${req.status}`}>{req.status}</span></td>
+                                        <td>{formatAge(req.age_hours)}</td>
+                                        <td>{req.target_hours}h</td>
+                                        <td className="text-warning">{formatAge(req.time_to_breach)}h remaining</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            {slaData.at_risk_count === 0 && slaData.breached_count === 0 && (
+                <div className="card text-center p-8">
+                    <div className="text-4xl mb-3">✓</div>
+                    <h3 className="text-success mb-2">All Requests Within SLA</h3>
+                    <p className="text-muted">No requests are at risk or breached at this time.</p>
+                </div>
+            )}
         </div>
     );
 }

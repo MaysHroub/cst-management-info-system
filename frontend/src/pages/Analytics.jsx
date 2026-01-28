@@ -66,13 +66,6 @@ function Analytics() {
         link.click();
     };
 
-    const simulateBreach = async () => {
-        if (confirm("This will artificially age requests to simulate SLA breaches for dashboard verification. Proceed?")) {
-            await client.get('/analytics/simulate-breach');
-            fetchData();
-        }
-    };
-
     if (loading && !kpis) return <div className="loading"><div className="spinner"></div> Loading analytics...</div>;
 
     return (
@@ -85,7 +78,6 @@ function Analytics() {
                             <p className="text-muted">Real-time governance and performance insights</p>
                         </div>
                         <div className="flex gap-2">
-                            <button className="btn btn-outline" onClick={simulateBreach}>Simulate SLA Breach</button>
                             <button className="btn btn-primary" onClick={handleExport}>Download CSV Report</button>
                         </div>
                     </div>
@@ -289,9 +281,9 @@ function MapTab({ zoneGeoJson }) {
                 <HeatMap geojson={heatmapData} zoneJson={zoneGeoJson} />
             </div>
             <div className="p-4 bg-light flex gap-4 text-xs">
-                <div className="flex items-center gap-1"><span style={{ width: '12px', height: '12px', background: '#991b1b', borderRadius: '2px', opacity: 0.6 }}></span> High Density Zone (10+ requests)</div>
-                <div className="flex items-center gap-1"><span style={{ width: '12px', height: '12px', background: '#f97316', borderRadius: '2px', opacity: 0.6 }}></span> Medium Density Zone (5-10 requests)</div>
-                <div className="flex items-center gap-1"><span style={{ width: '12px', height: '12px', background: '#fbbf24', borderRadius: '2px', opacity: 0.6 }}></span> Low Density Zone (1-5 requests)</div>
+                <div className="flex items-center gap-1"><span style={{ width: '12px', height: '12px', background: '#991b1b', borderRadius: '2px', opacity: 0.6 }}></span> High Density Zone (&gt;10 open requests)</div>
+                <div className="flex items-center gap-1"><span style={{ width: '12px', height: '12px', background: '#f97316', borderRadius: '2px', opacity: 0.6 }}></span> Medium Density Zone (6-10 open requests)</div>
+                <div className="flex items-center gap-1"><span style={{ width: '12px', height: '12px', background: '#fbbf24', borderRadius: '2px', opacity: 0.6 }}></span> Low Density Zone (1-5 open requests)</div>
                 <div className="flex items-center gap-1"><span style={{ width: '12px', height: '12px', background: '#dc2626', border: '2px solid #fff', borderRadius: '50%' }}></span> Critical Priority Request</div>
                 <div className="flex items-center gap-1"><span style={{ width: '12px', height: '12px', background: '#ea580c', border: '2px solid #fff', borderRadius: '50%' }}></span> High Priority Request</div>
             </div>

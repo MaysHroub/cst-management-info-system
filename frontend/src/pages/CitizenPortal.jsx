@@ -500,6 +500,10 @@ function ReportIssue() {
     };
 
     if (result?.success) {
+        const triageMetadata = result.data.triage_metadata || {};
+        const priorityEscalated = triageMetadata.priority_escalated;
+        const highImpact = triageMetadata.high_impact_flag;
+        
         return (
             <div className="card" style={{ maxWidth: '600px', margin: '0 auto' }}>
                 <div className="text-center">
@@ -507,6 +511,21 @@ function ReportIssue() {
                     <h2 className="mt-4">Request Submitted!</h2>
                     <p className="text-muted mt-2">Your Request ID:</p>
                     <code className="text-2xl font-bold">{result.data.request_id}</code>
+                    
+                    {priorityEscalated && (
+                        <div className="mt-3 p-3" style={{ background: '#fef3c7', borderRadius: 'var(--radius)', border: '1px solid #fbbf24' }}>
+                            <div style={{ fontSize: '1.5rem' }}>⚠️</div>
+                            <p className="text-sm font-medium" style={{ color: '#92400e' }}>
+                                Priority Auto-Escalated to <strong>{result.data.priority}</strong>
+                            </p>
+                            {triageMetadata.escalation_reason && (
+                                <p className="text-xs mt-1" style={{ color: '#92400e' }}>
+                                    Reason: {triageMetadata.escalation_reason}
+                                </p>
+                            )}
+                        </div>
+                    )}
+                    
                     <div className="mt-4 p-4" style={{ background: 'var(--background)', borderRadius: 'var(--radius)' }}>
                         <div className="flex justify-between mb-2">
                             <span>Status:</span>
@@ -516,6 +535,16 @@ function ReportIssue() {
                             <span>Category:</span>
                             <span>{result.data.category}</span>
                         </div>
+                        <div className="flex justify-between mb-2">
+                            <span>Priority:</span>
+                            <span className={`badge badge-${result.data.priority}`}>{result.data.priority}</span>
+                        </div>
+                        {highImpact && (
+                            <div className="flex justify-between mb-2">
+                                <span>⚠️ High Impact:</span>
+                                <span className="text-xs">Near sensitive location</span>
+                            </div>
+                        )}
                         <div className="flex justify-between">
                             <span>Expected Resolution:</span>
                             <span>{result.data.sla_policy?.target_hours || 96} hours</span>

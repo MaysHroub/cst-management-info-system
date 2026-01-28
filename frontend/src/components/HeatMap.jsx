@@ -31,8 +31,20 @@ const HeatMap = ({ geojson, zoneJson }) => {
 
     const zoneStyle = (feature) => {
         const count = feature.properties.request_count || 0;
+        // Thresholds: >10 = dark red, 6-10 = orange, 1-5 = yellow, 0 = gray
+        let fillColor;
+        if (count > 10) {
+            fillColor = '#991b1b';  // Dark red
+        } else if (count >= 6) {
+            fillColor = '#f97316';  // Orange
+        } else if (count >= 1) {
+            fillColor = '#fbbf24';  // Yellow
+        } else {
+            fillColor = '#94a3b8';  // Gray
+        }
+        
         return {
-            fillColor: count > 10 ? '#991b1b' : count > 5 ? '#f97316' : count > 0 ? '#fbbf24' : '#94a3b8',
+            fillColor: fillColor,
             weight: 2,
             opacity: 1,
             color: 'white',
